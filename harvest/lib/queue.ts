@@ -71,3 +71,37 @@ export class SeenSet {
     return this.keys.size;
   }
 }
+
+/**
+ * How many times each URL has been tried and failed.
+ *
+ * The crawler cannot mark a URL seen before fetching it — a timeout or a 503
+ * would then retire the page permanently — but it also cannot retry a dead URL
+ * forever. Counting attempts lets a failure be retried a few times and then
+ * given up on.
+ */
+export class AttemptLog {
+  private readonly counts = new Map<string, number>();
+  private readonly file: string;
+
+  constructor(file: string) {
+    this.file = file;
+    if (existsSync(file)) {
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
+        const key = line.trim();
+        if (key) this.counts.set(key, (this.counts.get(key) ?? 0) + 1);
+      }
+    }
+  }
+
+  count(url: string): number {
+    return this.counts.get(canonicalUrl(url)) ?? 0;
+  }
+
+  record(url: string): void {
+    const key = canonicalUrl(url);
+    this.counts.set(key, (this.counts.get(key) ?? 0) + 1);
+    mkdirSync(dirname(this.file), { recursive: true });
+    appendFileSync(this.file, key + '\n', 'utf8');
+  }
+}

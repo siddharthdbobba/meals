@@ -123,6 +123,33 @@ describe('classify', () => {
     expect(classify({ title: 'The Best Backpacking Meals Roundup', text: recipeText })).toBe('index');
   });
 
+  it('calls a navigation-heavy page with no quantities an index', () => {
+    const forumIndex = 'Camp Oven Recipes Welcome, Guest. New posts Search forums Sign In Register '
+      + 'Facebook Instagram Pinterest. Over the years people have put together many recipes you can cook.';
+    expect(classify({ title: 'Camp Oven Recipes', text: forumIndex })).toBe('index');
+  });
+
+  it('still sends a casual recipe with no quantities to the resolver', () => {
+    // The whole point of borderline: a hiker writing a real recipe loosely.
+    const casual = 'Boil some water, add the noodles, then stir in a handful of cheese and serve.';
+    expect(classify({ title: 'My go-to camp dinner', text: casual })).toBe('borderline');
+  });
+
+  it('does not call a real recipe an index just because the page has a footer', () => {
+    const withNav = recipeText + ' Facebook Instagram Pinterest Sign In Privacy Policy';
+    expect(classify({ title: 'Taco Rice', text: withNav })).toBe('recipe');
+  });
+
+  it('counts pieces of a thing as a quantity', () => {
+    // "2 flour tortillas" is a measured amount; treating it as none made real
+    // recipes look like listing pages.
+    expect(recipeSignals('2 flour tortillas and 3 eggs').quantities).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not call a single recipe an index for having a number in its title', () => {
+    expect(classify({ title: '3 Ingredient Easy Camp Pasta', text: recipeText })).toBe('recipe');
+  });
+
   it('rejects a page with no cooking signal', () => {
     expect(classify({ title: 'Our Team', text: 'We are a company that sells tents and sleeping bags to hikers.' })).toBe('reject');
   });
@@ -164,6 +191,22 @@ describe('normalizeIngredient', () => {
     expect(normalizeIngredient('2 cups long grain rice')).toBe('long grain rice');
   });
 
+  it('drops a unicode fraction amount', () => {
+    expect(normalizeIngredient('½ cup rice')).toBe('rice');
+    expect(normalizeIngredient('¼ tsp salt')).toBe('salt');
+  });
+
+  it('keeps a flavour that follows a comma', () => {
+    // Truncating at the comma collapsed every oatmeal flavour into one
+    // ingredient, which then merged unrelated recipes.
+    expect(normalizeIngredient('1 packet instant oatmeal, apple cinnamon'))
+      .toBe('instant oatmeal apple cinnamon');
+  });
+
+  it('still drops a preparation clause that follows a comma', () => {
+    expect(normalizeIngredient('1 cup onion, finely chopped')).toBe('onion');
+  });
+
   it('leaves an ingredient with no amount alone', () => {
     expect(normalizeIngredient('salt')).toBe('salt');
   });
@@ -198,6 +241,19 @@ describe('ingredientSet', () => {
     const found = ingredientSet({ title: 't', text: flat });
     expect(found).toContain('duck');
     expect(found).toContain('rice');
+  });
+
+  it('uses only the first recipe when a page embeds several', () => {
+    // A roundup embeds one Recipe per dish. Flattening them produced a single
+    // fifty-ingredient candidate belonging to no actual recipe.
+    const page = {
+      title: 't', text: '',
+      jsonld: [
+        { recipeIngredient: ['1 cup rice', '1 tbsp oil'] },
+        { recipeIngredient: ['2 cups chocolate', '1 cup marshmallow'] },
+      ],
+    };
+    expect(ingredientSet(page)).toEqual(['rice', 'oil']);
   });
 
   it('returns each ingredient once', () => {
@@ -281,7 +337,37 @@ describe('cluster', () => {
     expect(cluster(items)[0].representative.id).toBe('b');
   });
 
-  it('drops a recipe with too few ingredients to fingerprint honestly', () => {
-    expect(cluster([page('a', ['salt'])])).toEqual([]);
+  it('keeps a one-ingredient recipe as its own cluster', () => {
+    // Hot chocolate and a peanut-butter tortilla are real trail meals, and the
+    // schema allows a single ingredient. They simply never match anything.
+    expect(cluster([page('a', ['hot chocolate mix'])])).toHaveLength(1);
+  });
+
+  it('does not merge two recipes that share only pantry staples', () => {
+    const items = [
+      page('a', ['instant rice', 'olive oil', 'salt', 'garlic powder']),
+      page('b', ['ramen noodles', 'olive oil', 'salt', 'garlic powder']),
+    ];
+    expect(cluster(items)).toHaveLength(2);
+  });
+
+  it('does not merge two variants that differ in their one distinctive item', () => {
+    const items = [
+      page('a', ['rolled oats', 'powdered milk', 'chia seeds', 'blueberries']),
+      page('b', ['rolled oats', 'powdered milk', 'chia seeds', 'banana']),
+    ];
+    expect(cluster(items)).toHaveLength(2);
+  });
+
+  it('does not drift a cluster onto an unrelated recipe through a chain', () => {
+    // Comparing only against the current representative let A absorb B, then B
+    // absorb C, even when A and C share almost nothing.
+    const items = [
+      page('a', ['instant ramen', 'potato flakes', 'cheddar cheese', 'olive oil']),
+      page('b', ['instant ramen', 'potato flakes', 'cheddar cheese', 'butter']),
+      page('c', ['butter', 'cheddar cheese', 'sourdough bread', 'garlic']),
+    ];
+    const out = cluster(items);
+    expect(out.length).toBeGreaterThanOrEqual(2);
   });
 });

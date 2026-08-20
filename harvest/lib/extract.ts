@@ -14,10 +14,17 @@ const NAMED_ENTITIES: Record<string, string> = {
   amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
 };
 
+/** Unicode's ceiling. Anything above it is a typo or a mangled encoding, and
+ *  `String.fromCodePoint` throws on it rather than returning a replacement. */
+const MAX_CODE_POINT = 0x10ffff;
+
+const codePoint = (n: number, raw: string): string =>
+  Number.isFinite(n) && n >= 0 && n <= MAX_CODE_POINT ? String.fromCodePoint(n) : raw;
+
 export function decodeEntities(s: string): string {
   return s
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => codePoint(parseInt(h, 16), m))
+    .replace(/&#(\d+);/g, (m, d) => codePoint(Number(d), m))
     .replace(/&([a-z]+);/gi, (m, name) => NAMED_ENTITIES[name.toLowerCase()] ?? m);
 }
 

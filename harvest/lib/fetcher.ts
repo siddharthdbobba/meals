@@ -51,6 +51,25 @@ export function createFetcher(opts: FetcherOptions) {
     return join(cacheDir, h.slice(0, 2), h.slice(2, 4), `${h}.html`);
   };
 
+  /**
+   * A single request with its status exposed.
+   *
+   * `fetchPage` deliberately flattens every failure to null, but robots.txt
+   * needs the distinction: a 404 means "nothing is forbidden" while a 503
+   * means "we cannot know", and RFC 9309 says the second must be treated as a
+   * full disallow. A status of 0 means the request never completed.
+   */
+  async function fetchRaw(url: string): Promise<{ status: number; body: string | null }> {
+    const key = canonicalUrl(url);
+    try {
+      const res = await fetchImpl(key, { headers: { 'User-Agent': userAgent } } as RequestInit);
+      if (res.status >= 400) return { status: res.status, body: null };
+      return { status: res.status, body: await res.text() };
+    } catch {
+      return { status: 0, body: null };
+    }
+  }
+
   async function fetchPage(url: string): Promise<Page | null> {
     const key = canonicalUrl(url);
     const path = cachePath(key);
@@ -84,5 +103,5 @@ export function createFetcher(opts: FetcherOptions) {
     return { url: key, body, fromCache: false };
   }
 
-  return { fetchPage };
+  return { fetchPage, fetchRaw };
 }

@@ -12,7 +12,7 @@
 
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendJsonl, readJsonl, SeenSet } from './lib/queue.ts';
+import { appendJsonl, readJsonl, SeenSet, AttemptLog } from './lib/queue.ts';
 import { createFetcher } from './lib/fetcher.ts';
 import { parseRobots, isAllowed, type RobotsRules } from './lib/robots.ts';
 import { parseSitemap } from './lib/sitemap.ts';
@@ -34,6 +34,7 @@ const shardId = arg('shard', 0);
 const shardCount = arg('of', 1);
 const PAGES = join(STATE, shardCount > 1 ? `pages-${shardId}.jsonl` : 'pages.jsonl');
 const SEEN = join(STATE, shardCount > 1 ? `seen-pages-${shardId}.txt` : 'seen-pages.txt');
+const ATTEMPTS = join(STATE, shardCount > 1 ? `attempts-${shardId}.txt` : 'attempts.txt');
 const CACHE = join(ROOT, 'harvest/cache');
 
 const UA = 'mealbot/0.1 (+https://siddharthbobba.com/meals; recipe research; contact siddharthdbobba@gmail.com)';
@@ -43,6 +44,9 @@ const UA = 'mealbot/0.1 (+https://siddharthbobba.com/meals; recipe research; con
 const MAX_TEXT = 12_000;
 /** A sitemap index can fan out further than the crawl is worth. */
 const MAX_SITEMAPS_PER_DOMAIN = 25;
+
+/** How many times a failing URL is retried across runs before it is retired. */
+const MAX_ATTEMPTS = 3;
 
 function loadLeads(): Lead[] {
   const out: Lead[] = [];
@@ -62,6 +66,7 @@ async function main() {
   // so contiguous slices would hand one shard every large site.
   const targets = all.filter((_, i) => i % shardCount === shardId).slice(0, domainLimit);
   const seen = new SeenSet(SEEN);
+  const attempts = new AttemptLog(ATTEMPTS);
   const fetcher = createFetcher({ cacheDir: CACHE, userAgent: UA, delayMs: 1500 });
 
   console.log(`shard ${shardId}/${shardCount}: ${leads.length} leads -> ${targets.length} of ${all.length} domains; budget ${pageBudget}; ${seen.size} seen`);
@@ -77,10 +82,18 @@ async function main() {
     })();
     if (!origin) continue;
 
-    // Politeness first: without robots we do not crawl the domain at all.
-    let rules: RobotsRules;
-    const robotsPage = await fetcher.fetchPage(`${origin}/robots.txt`);
-    rules = robotsPage ? parseRobots(robotsPage.body, 'mealbot') : { allow: [], disallow: [], sitemaps: [] };
+    // Politeness first. A 404 means nothing is forbidden, but a 5xx, a 429, or
+    // a dead connection means we cannot know what is forbidden — and RFC 9309
+    // says an unreadable robots.txt must be treated as a full disallow rather
+    // than as permission.
+    const robots = await fetcher.fetchRaw(`${origin}/robots.txt`);
+    if (robots.status === 0 || robots.status === 429 || robots.status >= 500) {
+      console.log(`${target.domain}: robots.txt unavailable (${robots.status}), skipping domain`);
+      continue;
+    }
+    const rules: RobotsRules = robots.body
+      ? parseRobots(robots.body, 'mealbot')
+      : { allow: [], disallow: [], sitemaps: [] };
 
     // Candidate urls: the seeds the scouts found, plus whatever the sitemaps list.
     // A site that asks for a slower crawl gets one. Capped so a hostile or
@@ -110,8 +123,14 @@ async function main() {
     const worth = [...candidates].filter((u) => {
       if (!sameSite(target.seeds[0], u)) return false;
       if (seen.has(u)) return false;
+      if (attempts.count(u) >= MAX_ATTEMPTS) return false;
       let path: string;
-      try { path = new URL(u).pathname; } catch { return false; }
+      // Query string included: rules like "Disallow: /*?" and "Disallow: /search?"
+      // target the query, and checking the pathname alone silently ignores them.
+      try {
+        const parsed = new URL(u);
+        path = parsed.pathname + parsed.search;
+      } catch { return false; }
       if (!isAllowed(rules, path)) return false;
       // Seeds came from a human-ish judgement, so they bypass the shape filter.
       return target.seeds.includes(canonicalUrl(u)) || looksLikeRecipeUrl(u);
@@ -122,11 +141,19 @@ async function main() {
 
     for (const url of worth) {
       if (fetched >= pageBudget) break;
-      if (!seen.add(url)) continue;
 
       const page = await domainFetcher.fetchPage(url);
       fetched += 1;
-      if (!page) continue;
+
+      if (!page) {
+        // Marking a URL seen before fetching it retired every page lost to a
+        // timeout or a 503. Instead the failure is counted, retried on later
+        // runs, and only given up on after MAX_ATTEMPTS.
+        attempts.record(url);
+        if (attempts.count(url) >= MAX_ATTEMPTS) seen.add(url);
+        continue;
+      }
+      seen.add(url);
 
       const recipes = jsonLdRecipes(page.body);
       const text = pageText(page.body);

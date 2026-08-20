@@ -69,14 +69,17 @@ export function parseRobots(text: string, ua: string): RobotsRules {
     }
   }
 
-  const chosen =
-    groups.find((g) => g.agents.includes(agent)) ?? groups.find((g) => g.agents.includes('*'));
+  // Every group naming our agent, not just the first: sites running several
+  // plugins routinely emit more than one "User-agent: *" block, and taking
+  // only the first silently ignores the rest of their rules.
+  const named = groups.filter((g) => g.agents.includes(agent));
+  const chosen = named.length ? named : groups.filter((g) => g.agents.includes('*'));
 
   return {
-    allow: chosen?.allow ?? [],
-    disallow: chosen?.disallow ?? [],
+    allow: chosen.flatMap((g) => g.allow),
+    disallow: chosen.flatMap((g) => g.disallow),
     sitemaps,
-    crawlDelay: chosen?.crawlDelay,
+    crawlDelay: chosen.find((g) => g.crawlDelay !== undefined)?.crawlDelay,
   };
 }
 

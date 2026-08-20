@@ -11,16 +11,19 @@
  *   node --experimental-strip-types harvest/stage2.ts [--report]
  */
 
-import { readdirSync } from 'node:fs';
+import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendJsonl, readJsonl } from './lib/queue.ts';
+import { appendJsonl, readJsonl, SeenSet } from './lib/queue.ts';
 import { sharedPrefix, sharedSuffix, stripBoilerplate } from './lib/boilerplate.ts';
 import { classify } from './lib/relevance.ts';
 import { ingredientSet, cluster, type Candidate } from './lib/dedup.ts';
+import type { Resolved } from './lib/resolve.ts';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 const STATE = join(ROOT, 'harvest/state');
 const OUT = join(STATE, 'candidates.jsonl');
+const BORDERLINE = join(STATE, 'borderline.jsonl');
+const RESOLVED = join(STATE, 'resolved.jsonl');
 
 type PageRow = {
   url: string;
@@ -59,6 +62,16 @@ function main() {
   const candidates: Candidate[] = [];
   let strippedChars = 0;
 
+  // Pages the resolver has already judged. Their ingredients came from a model
+  // reading the page, which is exactly what the regex parser could not do.
+  const resolved = new Map<string, Resolved>(
+    readJsonl<Resolved>(RESOLVED).map((r) => [r.url, r]),
+  );
+  let promoted = 0;
+  // Stage 2 is re-run as the crawl grows, so the borderline queue needs its own
+  // seen-set: without it every run re-queues every unresolved page.
+  const queued = new SeenSet(join(STATE, 'seen-borderline.txt'));
+
   for (const [domain, rows] of byDomain) {
     const sample = rows.slice(0, BOILERPLATE_SAMPLE).map((r) => r.text);
     const prefix = sharedPrefix(sample);
@@ -70,6 +83,27 @@ function main() {
 
       const verdict = classify({ title: row.title, text, jsonld: row.jsonld });
       verdicts[verdict] += 1;
+
+      if (verdict === 'borderline') {
+        const answer = resolved.get(row.url);
+        if (!answer) {
+          // Queue it for the resolver and move on; it rejoins on the next run.
+          if (queued.add(row.url)) {
+            appendJsonl(BORDERLINE, { url: row.url, title: row.title, text });
+          }
+          continue;
+        }
+        promoted += 1;
+        candidates.push({
+          id: row.url,
+          url: row.url,
+          title: answer.title,
+          text,
+          ingredients: answer.ingredients,
+        });
+        continue;
+      }
+
       // Index pages are kept out of the corpus but are not wasted: their links
       // already entered the crawl frontier in stage 1.
       if (verdict !== 'recipe') continue;
@@ -86,6 +120,11 @@ function main() {
   }
 
   const clusters = cluster(candidates);
+
+  // Stage 2 recomputes every cluster from pages.jsonl on each run, so the
+  // output is rewritten rather than appended. Appending multiplied the whole
+  // corpus every time the stage was re-run against a grown crawl.
+  writeFileSync(OUT, '', 'utf8');
 
   for (const k of clusters) {
     appendJsonl(OUT, {
@@ -105,6 +144,7 @@ function main() {
       `pages ${pages.length} across ${byDomain.size} domains`,
       `boilerplate stripped ${(strippedChars / 1000).toFixed(0)}k chars`,
       `verdicts recipe=${verdicts.recipe} index=${verdicts.index} borderline=${verdicts.borderline} reject=${verdicts.reject}`,
+      `borderline promoted by resolver: ${promoted}`,
       `clusters ${clusters.length} (folded ${folded} duplicates)`,
     ].join('\n'),
   );

@@ -47,6 +47,13 @@ describe('parseRobots', () => {
     expect(parseRobots(txt, 'mealbot').disallow).toEqual(['/a']);
   });
 
+  it('merges every group that names our agent', () => {
+    // WordPress sites with several plugins routinely emit more than one
+    // "User-agent: *" block; taking only the first silently ignores the rest.
+    const txt = 'User-agent: *\nDisallow: /a\n\nUser-agent: *\nDisallow: /b\n';
+    expect(parseRobots(txt, 'mealbot').disallow).toEqual(['/a', '/b']);
+  });
+
   it('returns an unrestricted result for an empty file', () => {
     const r = parseRobots('', 'mealbot');
     expect(r.disallow).toEqual([]);
@@ -157,8 +164,26 @@ describe('jsonLdRecipes', () => {
     expect(jsonLdRecipes(`<script>var x = {"@type":"Recipe"}</script>`)).toEqual([]);
   });
 
+  it('uses only the first recipe when a page carries several', () => {
+    // A roundup page embeds one Recipe per dish. Flattening them all produced a
+    // single fifty-ingredient composite belonging to no actual recipe.
+    const html =
+      `<script type="application/ld+json">{"@type":"Recipe","name":"A"}</script>` +
+      `<script type="application/ld+json">{"@type":"Recipe","name":"B"}</script>`;
+    expect(jsonLdRecipes(html)).toHaveLength(2);
+  });
+
   it('returns nothing when the page has no structured data', () => {
     expect(jsonLdRecipes('<html><body>hi</body></html>')).toEqual([]);
+  });
+});
+
+describe('decodeEntities via pageText', () => {
+  it('leaves an out-of-range numeric entity alone instead of throwing', () => {
+    // String.fromCodePoint throws RangeError above 0x10FFFF, and one malformed
+    // entity in one crawled page used to kill the whole shard.
+    expect(() => pageText('<p>a &#99999999; b</p>')).not.toThrow();
+    expect(() => pageText('<p>a &#x110000; b</p>')).not.toThrow();
   });
 });
 

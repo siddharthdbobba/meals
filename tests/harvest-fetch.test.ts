@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { appendJsonl, readJsonl, SeenSet } from '../harvest/lib/queue';
+import { appendJsonl, readJsonl, SeenSet, AttemptLog } from '../harvest/lib/queue';
 import { createFetcher } from '../harvest/lib/fetcher';
 
 let dir: string;
@@ -95,6 +95,54 @@ function sleepSpy() {
   const waits: number[] = [];
   return { waits, sleep: async (ms: number) => { waits.push(ms); } };
 }
+
+describe('AttemptLog', () => {
+  it('reports no attempts for a url it has never seen', () => {
+    expect(new AttemptLog(join(dir, 'att')).count('https://x.com/a')).toBe(0);
+  });
+
+  it('counts each recorded attempt', () => {
+    const log = new AttemptLog(join(dir, 'att'));
+    log.record('https://x.com/a');
+    log.record('https://x.com/a');
+    expect(log.count('https://x.com/a')).toBe(2);
+  });
+
+  it('keeps counts for different urls apart', () => {
+    const log = new AttemptLog(join(dir, 'att'));
+    log.record('https://x.com/a');
+    expect(log.count('https://x.com/b')).toBe(0);
+  });
+
+  it('survives a restart by reloading from disk', () => {
+    const path = join(dir, 'att');
+    new AttemptLog(path).record('https://x.com/a');
+    expect(new AttemptLog(path).count('https://x.com/a')).toBe(1);
+  });
+});
+
+describe('createFetcher raw status', () => {
+  it('reports the status of a server error so robots can be handled correctly', async () => {
+    const net = stubFetch({ 'https://x.com/robots.txt': { status: 503, body: '' } });
+    const f = createFetcher({ cacheDir: dir, userAgent: 'm', fetchImpl: net.impl });
+    expect((await f.fetchRaw('https://x.com/robots.txt')).status).toBe(503);
+  });
+
+  it('reports a zero status when the network throws', async () => {
+    const f = createFetcher({
+      cacheDir: dir, userAgent: 'm',
+      fetchImpl: async () => { throw new Error('ECONNRESET'); },
+    });
+    expect((await f.fetchRaw('https://x.com/robots.txt')).status).toBe(0);
+  });
+
+  it('returns the body on success', async () => {
+    const net = stubFetch({ 'https://x.com/robots.txt': { body: 'User-agent: *', type: 'text/plain' } });
+    const f = createFetcher({ cacheDir: dir, userAgent: 'm', fetchImpl: net.impl });
+    const r = await f.fetchRaw('https://x.com/robots.txt');
+    expect(r).toMatchObject({ status: 200, body: 'User-agent: *' });
+  });
+});
 
 describe('createFetcher', () => {
   it('returns the body of a successful fetch', async () => {

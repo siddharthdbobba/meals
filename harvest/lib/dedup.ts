@@ -33,7 +33,7 @@ export type Cluster = {
  * weight, water needs, and cook time. Instant rice is not rice.
  */
 const PREP =
-  /\b(?:chopped|diced|sliced|minced|grated|shredded|crushed|fresh|large|small|medium|whole|halved|optional|packed|heaping|level|approximately|about|roughly)\b/gi;
+  /\b(?:finely|roughly|thinly|coarsely|freshly|chopped|diced|sliced|minced|grated|shredded|crushed|fresh|large|small|medium|whole|halved|optional|packed|heaping|level|approximately|about|roughly)\b/gi;
 
 /**
  * A leading amount and unit.
@@ -42,7 +42,7 @@ const PREP =
  * matches inside "2 lbs duck" and leaves the ingredient as "bs duck".
  */
 const UNIT =
-  /^\s*\d+(?:[\/.-]\d+)?\s*(?:tablespoons?|teaspoons?|tbsps?|tsps?|ounces?|pounds?|packages?|packets?|liters?|litres?|handfuls?|grams?|cloves?|slices?|scoops?|blocks?|cups?|cans?|bars?|lbs?|kg|ml|oz|g|l)?\b\s*(?:of\s+)?/i;
+  /^\s*[\d¼½¾⅓⅔⅛]+(?:[\/.-]\d+)?\s*(?:tablespoons?|teaspoons?|tbsps?|tsps?|ounces?|pounds?|packages?|packets?|liters?|litres?|handfuls?|grams?|cloves?|slices?|scoops?|blocks?|cups?|cans?|bars?|lbs?|kg|ml|oz|g|l)?\b\s*(?:of\s+)?/i;
 
 /**
  * An ingredient line reduced to the thing itself: no amount, no unit, no
@@ -51,9 +51,17 @@ const UNIT =
 export function normalizeIngredient(line: string): string {
   let s = line.toLowerCase();
   s = s.replace(/\([^)]*\)/g, ' ');       // "(or gouda)"
-  s = s.replace(/,.*$/, ' ');              // ", finely chopped"
+  // A clause after the comma is dropped only when nothing but preparation is
+  // left in it. Truncating unconditionally collapsed every oatmeal flavour
+  // into one ingredient, which then merged unrelated recipes.
+  const comma = s.indexOf(',');
+  if (comma !== -1) {
+    const tail = s.slice(comma + 1);
+    const meaningful = tail.replace(PREP, ' ').replace(/[^a-z0-9 ]/g, ' ').trim();
+    s = meaningful ? `${s.slice(0, comma)} ${tail}` : s.slice(0, comma);
+  }
   s = s.replace(UNIT, ' ');                // leading "2 cups of"
-  s = s.replace(/^\s*\d+(?:[\/.-]\d+)?\s*/, ' '); // a bare leading count
+  s = s.replace(/^\s*[\d¼½¾⅓⅔⅛]+(?:[\/.-]\d+)?\s*/, ' '); // a bare leading count
   s = s.replace(PREP, ' ');
   return s.replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -101,9 +109,11 @@ type IngredientSource = { text: string; jsonld?: any[] };
 
 /** The distinct ingredients of a page, structured data first. */
 export function ingredientSet(page: IngredientSource): string[] {
-  const fromJsonLd = page.jsonld
-    ?.flatMap((r: any) => (Array.isArray(r?.recipeIngredient) ? r.recipeIngredient : []))
-    ?? [];
+  // The FIRST recipe only. A roundup page embeds one Recipe per dish, and
+  // flattening them all produced a single fifty-ingredient candidate that
+  // belonged to no actual recipe.
+  const first = page.jsonld?.find((r: any) => Array.isArray(r?.recipeIngredient)) as any;
+  const fromJsonLd: unknown[] = first?.recipeIngredient ?? [];
 
   const lines = fromJsonLd.length ? fromJsonLd.map(String) : ingredientPhrases(page.text);
 
@@ -160,9 +170,24 @@ export function hamming(a: bigint, b: bigint): number {
   return n;
 }
 
-/** Below this many ingredients a fingerprint says more about what the page
- *  failed to parse than about the recipe. */
-const MIN_INGREDIENTS = 3;
+/**
+ * Ingredients almost every recipe carries.
+ *
+ * They inflate similarity without saying anything about what the dish is:
+ * rice + oil + salt + garlic powder and ramen + oil + salt + garlic powder
+ * score 0.6 on the raw sets while being two different dinners. Similarity is
+ * therefore computed over what is left once these are removed.
+ */
+const STAPLES = new Set([
+  'salt', 'pepper', 'black pepper', 'salt and pepper', 'water', 'oil', 'olive oil',
+  'vegetable oil', 'cooking oil', 'butter', 'margarine', 'sugar', 'brown sugar',
+  'garlic powder', 'onion powder', 'seasoning', 'spices', 'flour', 'all purpose flour',
+]);
+
+/** Fewer than this and there is nothing to match on, so the recipe stands
+ *  alone rather than being dropped: hot chocolate and a peanut-butter tortilla
+ *  are real trail meals and the schema allows a single ingredient. */
+const MIN_TO_MATCH = 2;
 
 /**
  * How much of two ingredient sets must overlap to call them one recipe.
@@ -173,7 +198,20 @@ const MIN_INGREDIENTS = 3;
  * honest about what "nearly the same" means. SimHash stays as the stored
  * fingerprint, useful as a blocking key once the corpus is large.
  */
-const THRESHOLD = 0.6;
+const THRESHOLD = 0.7;
+
+/**
+ * How alike two recipes are, ignoring pantry staples.
+ *
+ * Falls back to the raw sets when one recipe is nothing but staples, so simple
+ * drinks still match each other.
+ */
+export function similarity(a: string[], b: string[]): number {
+  const strip = (xs: string[]) => xs.filter((x) => !STAPLES.has(x));
+  const da = strip(a);
+  const db = strip(b);
+  return da.length && db.length ? jaccard(da, db) : jaccard(a, b);
+}
 
 /** Share of ingredients two recipes hold in common. */
 export function jaccard(a: string[], b: string[]): number {
@@ -202,11 +240,21 @@ export function cluster(candidates: Candidate[]): Cluster[] {
   const clusters: Cluster[] = [];
 
   for (const c of candidates) {
-    if (c.ingredients.length < MIN_INGREDIENTS) continue;
     const fp = simhash(c.ingredients);
 
-    const hit = clusters.find(
-      (k) => jaccard(k.representative.ingredients, c.ingredients) >= THRESHOLD,
+    // Too thin to compare: keep it, but never match it to anything.
+    if (c.ingredients.length < MIN_TO_MATCH) {
+      clusters.push({ representative: c, duplicates: [], fingerprint: fp });
+      continue;
+    }
+
+    // Complete linkage — the candidate must be similar to every member, not
+    // just the representative. Matching the representative alone let A absorb
+    // B and then B absorb C, drifting a cluster onto an unrelated recipe.
+    const hit = clusters.find((k) =>
+      [k.representative, ...k.duplicates].every(
+        (m) => similarity(m.ingredients, c.ingredients) >= THRESHOLD,
+      ),
     );
     if (!hit) {
       clusters.push({ representative: c, duplicates: [], fingerprint: fp });
