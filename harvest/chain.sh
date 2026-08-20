@@ -7,7 +7,8 @@
 #   layer 2  cluster      stage 2: strip, classify, dedup, queue borderline
 #   layer 3  resolve      stage 2b: cheap model judges the borderline queue
 #   layer 4  recluster    stage 2 again, promoting what the resolver recovered
-#   layer 5  transform    stage 3: write recipe files
+#   layer 5  transform    stage 3: write recipe DRAFTS
+#   layer 6  gate         stage 5: rules, refuters, publish or reject
 #
 # Each layer is a child process of the one above it, so `pstree` shows the
 # whole pipeline as one nested stack. Every stage is independently resumable,
@@ -34,7 +35,7 @@ say() { echo "[$(date '+%H:%M:%S')] layer $LAYER: $*" | tee -a "$LOG"; }
 # is the point: the parent does not exit until everything below it is done.
 descend() {
   local next=$((LAYER + 1))
-  if [ "$next" -gt 5 ]; then
+  if [ "$next" -gt 6 ]; then
     say "chain complete"
     return 0
   fi
@@ -46,14 +47,22 @@ case "$LAYER" in
   1)
     say "waiting for any running scouts to finish"
     while pgrep -f "wave2-run.sh" >/dev/null 2>&1; do sleep 30; done
-    say "scouts done; starting the crawl across all lead domains"
+    say "scouts done"
 
-    # Six shards, each owning a disjoint set of domains.
-    for i in 0 1 2 3 4 5; do
-      "${NODE[@]}" "$ROOT/harvest/stage1.ts" --budget 6000 --shard "$i" --of 6 \
-        >> "$STATE/stage1-shard$i.log" 2>&1 &
-    done
-    wait
+    # Never start a second set of shards on top of a running one: two processes
+    # appending 12 KB records to the same pages file would interleave into
+    # corrupt lines, and they would fight over the same seen-set.
+    if pgrep -f "stage1.ts" >/dev/null 2>&1; then
+      say "crawl already running; waiting for it rather than starting a second"
+      while pgrep -f "stage1.ts" >/dev/null 2>&1; do sleep 30; done
+    else
+      say "starting the crawl across all lead domains"
+      for i in 0 1 2 3 4 5; do
+        "${NODE[@]}" "$ROOT/harvest/stage1.ts" --budget 6000 --shard "$i" --of 6 \
+          >> "$STATE/stage1-shard$i.log" 2>&1 &
+      done
+      wait
+    fi
     say "crawl finished: $(cat "$STATE"/pages-*.jsonl 2>/dev/null | wc -l | tr -d ' ') pages"
     descend
     ;;
@@ -77,8 +86,14 @@ case "$LAYER" in
     ;;
 
   5)
-    say "writing recipe files"
+    say "writing recipe drafts"
     "${NODE[@]}" "$ROOT/harvest/stage3.ts" --parallel 4 2>&1 | tee -a "$LOG"
+    descend
+    ;;
+
+  6)
+    say "quality gate"
+    "${NODE[@]}" "$ROOT/harvest/stage5-qa.ts" --parallel 4 2>&1 | tee -a "$LOG"
     say "$(find "$ROOT/content" -name '*.md' | wc -l | tr -d ' ') recipes in content/"
     descend
     ;;

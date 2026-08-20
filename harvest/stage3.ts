@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendJsonl, readJsonl, SeenSet } from './lib/queue.ts';
-import { slugFor, shardFor, renderRecipe, parseRecipeJson, validateRecipe } from './lib/transform.ts';
+import { slugFor, parseRecipeJson, validateRecipe } from './lib/transform.ts';
 import {
   TRIP_STYLES, SLOTS, HEAT_SOURCES, WATER, CLEANUP, DIETARY,
   HOME_PREP, SHELF_LIFE, SKILL, COST,
@@ -37,6 +37,7 @@ const argStr = (name: string): string | null => {
 const ROOT = new URL('..', import.meta.url).pathname;
 const STATE = join(ROOT, 'harvest/state');
 const CONTENT = join(ROOT, 'content');
+const DRAFTS = join(ROOT, 'harvest/drafts');
 const QUARANTINE = join(ROOT, 'harvest/quarantine');
 const CANDIDATES = join(STATE, 'candidates.jsonl');
 const DONE = join(STATE, 'seen-transformed.txt');
@@ -125,17 +126,16 @@ function askClaude(prompt: string, model: string | null): Promise<string> {
   });
 }
 
-/** A slug nothing else has claimed. */
-function freeSlug(slug: string): { slug: string; path: string } {
-  const shard = shardFor(slug);
-  mkdirSync(join(CONTENT, shard), { recursive: true });
+/** A draft filename nothing else has claimed. */
+function freeDraft(slug: string): { slug: string; path: string } {
+  mkdirSync(DRAFTS, { recursive: true });
   let candidate = slug;
   let n = 2;
-  while (existsSync(join(CONTENT, shard, `${candidate}.md`))) {
+  while (existsSync(join(DRAFTS, `${candidate}.json`))) {
     candidate = `${slug}-${n}`;
     n += 1;
   }
-  return { slug: candidate, path: join(CONTENT, shard, `${candidate}.md`) };
+  return { slug: candidate, path: join(DRAFTS, `${candidate}.json`) };
 }
 
 async function transform(c: Candidate, model: string | null): Promise<'written' | 'quarantined'> {
@@ -158,8 +158,14 @@ async function transform(c: Candidate, model: string | null): Promise<'written' 
       continue;
     }
 
-    const { slug, path } = freeSlug(slugFor(String(parsed.title)));
-    writeFileSync(path, renderRecipe(parsed, c.url), 'utf8');
+    // Drafts, not content. Stage 5 is the only thing allowed to publish, so a
+    // recipe that fails the quality gate never has to be deleted from the site.
+    const { slug, path } = freeDraft(slugFor(String(parsed.title)));
+    writeFileSync(
+      path,
+      JSON.stringify({ recipe: parsed, url: c.url, sourceText: c.text, duplicatesFolded: c.duplicates?.length ?? 0 }, null, 2),
+      'utf8',
+    );
     appendJsonl(LOG, { slug, url: c.url, title: parsed.title, duplicatesFolded: c.duplicates?.length ?? 0 });
     return 'written';
   }
@@ -214,7 +220,7 @@ async function main() {
   };
 
   await Promise.all(Array.from({ length: Math.min(parallel, pending.length) }, worker));
-  console.log(`stage 3 done: ${written} written, ${quarantined} quarantined`);
+  console.log(`stage 3 done: ${written} drafts written, ${quarantined} quarantined`);
 }
 
 main().catch((e) => {

@@ -3,3 +3,6 @@ node_modules/
 
 harvest/cache/
 harvest/state/
+harvest/drafts/
+harvest/rejected/
+harvest/quarantine/
