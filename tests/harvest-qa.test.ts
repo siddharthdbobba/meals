@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { facetViolations, plausibilityViolations, ngramOverlap, qaVerdict } from '../harvest/lib/qa';
+import { facetViolations, plausibilityViolations, ngramOverlap, qaVerdict, sourceGrounding } from '../harvest/lib/qa';
 
 const base = {
   title: 'Test Meal',
@@ -176,6 +176,82 @@ describe('ngramOverlap', () => {
 
   it('is zero when the body is shorter than the window', () => {
     expect(ngramOverlap('too short', 'anything at all here', 5)).toBe(0);
+  });
+});
+
+describe('sourceGrounding', () => {
+  const ings = [
+    { item: 'Instant rice', amount: '1 cup' },
+    { item: 'Dried beef', amount: '2 oz' },
+    { item: 'Chili powder', amount: '1 tsp' },
+  ];
+
+  it('is high when the source really does discuss these ingredients', () => {
+    const src = 'Pack instant rice and some dried beef, then add chili powder at camp.';
+    expect(sourceGrounding(ings, src)).toBeGreaterThan(0.8);
+  });
+
+  it('is zero when the source is about something else entirely', () => {
+    const src = 'Kyle Peters finishes Arenacross season undefeated. Adventure Rider news and ride reports.';
+    expect(sourceGrounding(ings, src)).toBe(0);
+  });
+
+  it('matches on the head word rather than the exact phrase', () => {
+    expect(sourceGrounding([{ item: 'Sharp cheddar cheese', amount: '1 oz' }], 'add some cheese')).toBe(1);
+  });
+});
+
+describe('qaVerdict grounding', () => {
+  const fabricated = meal({
+    ingredients: [
+      { item: 'Instant rice', amount: '1 cup' },
+      { item: 'Dried beef', amount: '2 oz' },
+      { item: 'Chili powder', amount: '1 tsp' },
+    ],
+  });
+
+  it('rejects a recipe whose ingredients appear nowhere in its source', () => {
+    // A motocross news article cannot be the source of a rice bowl. Publishing
+    // it would attribute invented content to someone else's page.
+    // A real crawled page, not a fragment: grounding abstains on very short
+    // text because script detection needs something to work with.
+    const motocross = ('Kyle Peters finishes the Arenacross season undefeated, and with that '
+      + 'result he takes the championship for the second time in a row. The team said that '
+      + 'the bike was set up for the tighter rounds, and it is clear from the lap times that '
+      + 'this was the right call when the track went slick in the final. ').repeat(4);
+    const r = qaVerdict(fabricated, motocross, []);
+    expect(r.pass).toBe(false);
+    expect(r.reasons.join(' ')).toMatch(/source|grounded|fabricat/i);
+  });
+
+  it('accepts a recipe its source actually supports', () => {
+    const supporting = ('Bring instant rice and dried beef, season with chili powder at camp. '
+      + 'This one pot dinner packs down small and rehydrates fast on the trail. ').repeat(3);
+    const r = qaVerdict(fabricated, supporting, []);
+    expect(r.pass).toBe(true);
+  });
+
+  it('does not punish a recipe adapted from a Norwegian source', () => {
+    // meny.no/oppskrifter/pisket-krem is a real whipped cream recipe. It uses
+    // the same alphabet as English, so a script test cannot tell them apart;
+    // only the language can.
+    const norwegian = ('Pisket krem oppskrift med sukker og vaniljesukker. Visp fløten til '
+      + 'den er stiv men ikke for lenge ellers blir det smør. Serveres til dessert og kaker. ').repeat(3);
+    expect(qaVerdict(fabricated, norwegian, []).pass).toBe(true);
+  });
+
+  it('does not punish a recipe adapted from a Czech source', () => {
+    const czech = ('Drsné westernové recepty na guláš a fazole v kotlíku nad ohněm. '
+      + 'Připravíme si maso cibuli a koření potom vaříme pomalu několik hodin. ').repeat(3);
+    expect(qaVerdict(fabricated, czech, []).pass).toBe(true);
+  });
+
+  it('does not punish a recipe adapted from a non-latin source', () => {
+    // The Hindi and Japanese pages the scouts found are real recipes whose
+    // ingredient names cannot match an English list. Grounding cannot judge
+    // them, so it must abstain rather than reject.
+    const r = qaVerdict(fabricated, 'बारबेक्यू सोया चाप रेसिपी दही बेसन मसाला '.repeat(20), []);
+    expect(r.pass).toBe(true);
   });
 });
 

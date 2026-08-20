@@ -157,6 +157,67 @@ export function ngramOverlap(body: string, source: string, n: number): number {
 /** Above this share of shared 8-grams, the body is the source's writing. */
 const MAX_OVERLAP = 0.18;
 
+/** Words too common to prove anything by appearing. */
+const WEAK = new Set([
+  'salt', 'water', 'oil', 'sugar', 'pepper', 'powder', 'mix', 'dried', 'instant',
+  'fresh', 'ground', 'whole', 'large', 'small', 'and', 'the', 'of', 'or',
+]);
+
+/**
+ * The share of a recipe's ingredients that the source page actually mentions.
+ *
+ * A page about motocross results cannot be the source of a rice bowl. Without
+ * this the pipeline will happily invent a recipe from any page that reached
+ * stage 3 and stamp someone else's URL on it, which is worse than a bad
+ * recipe: it is invented content attributed to a real publisher.
+ */
+export function sourceGrounding(
+  ingredients: { item: string }[],
+  sourceText: string,
+): number {
+  if (ingredients.length === 0) return 0;
+  const hay = sourceText.toLowerCase();
+
+  let checked = 0;
+  let found = 0;
+  for (const ing of ingredients) {
+    // The head word carries the identity: "sharp cheddar cheese" is grounded by
+    // "cheese". Weak words are skipped so salt and water cannot vouch for a
+    // recipe on their own.
+    const words = ing.item.toLowerCase().replace(/[^a-z ]/g, ' ').split(/\s+/).filter(Boolean);
+    const meaningful = words.filter((w) => w.length > 2 && !WEAK.has(w));
+    if (meaningful.length === 0) continue;
+    checked += 1;
+    if (meaningful.some((w) => hay.includes(w))) found += 1;
+  }
+  return checked === 0 ? 0 : found / checked;
+}
+
+/** Below this share of ingredients present in the source, the recipe was not
+ *  drawn from that page. */
+const MIN_GROUNDING = 0.4;
+
+/** Function words that are everywhere in English prose and rare elsewhere. */
+const ENGLISH_MARKERS =
+  /\b(the|and|of|to|in|for|with|you|your|it|is|are|that|this|from|about|into|until|then|when)\b/gi;
+
+/**
+ * Whether grounding can say anything about this source at all.
+ *
+ * Grounding compares English ingredient names against the page, so it is
+ * meaningless unless the page is in English. A script test is not enough:
+ * Norwegian and Czech use the same alphabet, and judging meny.no's whipped
+ * cream recipe against English words rejected a perfectly real recipe. The
+ * language has to be detected, not the alphabet.
+ */
+function groundable(sourceText: string): boolean {
+  const words = sourceText.split(/\s+/).filter(Boolean);
+  if (words.length < 60) return false;
+  const markers = (sourceText.match(ENGLISH_MARKERS) ?? []).length;
+  // English prose runs well above this; other languages fall far below it.
+  return markers / words.length > 0.08;
+}
+
 export type Verdict = { pass: boolean; reasons: string[] };
 
 /**
@@ -169,6 +230,15 @@ export function qaVerdict(r: Recipe, sourceText: string, refutations: Refutation
   const overlap = ngramOverlap(r.body, sourceText, 8);
   if (overlap > MAX_OVERLAP) {
     reasons.push(`body is not original: ${Math.round(overlap * 100)}% shared 8-grams with the source`);
+  }
+
+  if (groundable(sourceText)) {
+    const grounding = sourceGrounding(r.ingredients, sourceText);
+    if (grounding < MIN_GROUNDING) {
+      reasons.push(
+        `not grounded in its source: only ${Math.round(grounding * 100)}% of ingredients appear on the page`,
+      );
+    }
   }
 
   const against = refutations.filter((x) => x.refuted);
