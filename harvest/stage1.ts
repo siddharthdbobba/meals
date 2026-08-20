@@ -19,11 +19,21 @@ import { parseSitemap } from './lib/sitemap.ts';
 import { jsonLdRecipes, pageText, pageTitle, canonicalUrl } from './lib/extract.ts';
 import { planDomains, looksLikeRecipeUrl, sameSite, type Lead } from './lib/plan.ts';
 
+const arg = (name: string, fallback: number): number => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i === -1 ? fallback : Number(process.argv[i + 1]);
+};
+
 const ROOT = new URL('..', import.meta.url).pathname;
 const STATE = join(ROOT, 'harvest/state');
 const LEADS = join(STATE, 'leads');
-const PAGES = join(STATE, 'pages.jsonl');
-const SEEN = join(STATE, 'seen-pages.txt');
+/** Each shard owns its own output and its own seen-set. Sharding is by domain,
+ *  so the shards never contend for a URL, and separate files mean two 12 KB
+ *  appends can never interleave into a corrupt line. */
+const shardId = arg('shard', 0);
+const shardCount = arg('of', 1);
+const PAGES = join(STATE, shardCount > 1 ? `pages-${shardId}.jsonl` : 'pages.jsonl');
+const SEEN = join(STATE, shardCount > 1 ? `seen-pages-${shardId}.txt` : 'seen-pages.txt');
 const CACHE = join(ROOT, 'harvest/cache');
 
 const UA = 'mealbot/0.1 (+https://siddharthbobba.com/meals; recipe research; contact siddharthdbobba@gmail.com)';
@@ -33,11 +43,6 @@ const UA = 'mealbot/0.1 (+https://siddharthbobba.com/meals; recipe research; con
 const MAX_TEXT = 12_000;
 /** A sitemap index can fan out further than the crawl is worth. */
 const MAX_SITEMAPS_PER_DOMAIN = 25;
-
-const arg = (name: string, fallback: number): number => {
-  const i = process.argv.indexOf(`--${name}`);
-  return i === -1 ? fallback : Number(process.argv[i + 1]);
-};
 
 function loadLeads(): Lead[] {
   const out: Lead[] = [];
@@ -52,11 +57,14 @@ async function main() {
   const domainLimit = arg('domains', 9999);
 
   const leads = loadLeads();
-  const targets = planDomains(leads).slice(0, domainLimit);
+  const all = planDomains(leads);
+  // Round-robin rather than block assignment: the plan is sorted richest-first,
+  // so contiguous slices would hand one shard every large site.
+  const targets = all.filter((_, i) => i % shardCount === shardId).slice(0, domainLimit);
   const seen = new SeenSet(SEEN);
   const fetcher = createFetcher({ cacheDir: CACHE, userAgent: UA, delayMs: 1500 });
 
-  console.log(`${leads.length} leads -> ${targets.length} domains; budget ${pageBudget} pages; ${seen.size} already seen`);
+  console.log(`shard ${shardId}/${shardCount}: ${leads.length} leads -> ${targets.length} of ${all.length} domains; budget ${pageBudget}; ${seen.size} seen`);
 
   let fetched = 0;
   let kept = 0;
@@ -75,6 +83,13 @@ async function main() {
     rules = robotsPage ? parseRobots(robotsPage.body, 'mealbot') : { allow: [], disallow: [], sitemaps: [] };
 
     // Candidate urls: the seeds the scouts found, plus whatever the sitemaps list.
+    // A site that asks for a slower crawl gets one. Capped so a hostile or
+    // typo'd value cannot stall the shard for hours on one domain.
+    const politeDelay = Math.min(Math.max(1500, (rules.crawlDelay ?? 0) * 1000), 10_000);
+    const domainFetcher = politeDelay === 1500
+      ? fetcher
+      : createFetcher({ cacheDir: CACHE, userAgent: UA, delayMs: politeDelay });
+
     const candidates = new Set<string>(target.seeds);
     const sitemapQueue = [...rules.sitemaps];
     if (sitemapQueue.length === 0) sitemapQueue.push(`${origin}/sitemap.xml`);
@@ -83,7 +98,7 @@ async function main() {
     while (sitemapQueue.length && walked < MAX_SITEMAPS_PER_DOMAIN) {
       const sm = sitemapQueue.shift()!;
       walked += 1;
-      const page = await fetcher.fetchPage(sm);
+      const page = await domainFetcher.fetchPage(sm);
       if (!page) continue;
       const parsed = parseSitemap(page.body);
       for (const child of parsed.sitemaps) {
@@ -109,7 +124,7 @@ async function main() {
       if (fetched >= pageBudget) break;
       if (!seen.add(url)) continue;
 
-      const page = await fetcher.fetchPage(url);
+      const page = await domainFetcher.fetchPage(url);
       fetched += 1;
       if (!page) continue;
 
