@@ -65,6 +65,11 @@ facet with every option selected and a facet with none selected both mean "no
 constraint": the first is the opening state, the second is what Clear all
 leaves behind.
 
+The search box runs against titles, blurbs, and ingredient names only, so a
+passing mention in the prose cannot outrank an actual ingredient. Every term
+must hit, in any order, and hits are marked on the card's title and blurb; an
+ingredient-only match shows no mark, because the card does not print them.
+
 `water`, `servings`, and `scalable` stay in the frontmatter and appear on the
 recipe page, but they are deliberately not filters.
 

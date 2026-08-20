@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import {
-  bucket, derive, facetsFor, matches, matchesSearch, isFilterEmpty,
+  bucket, derive, facetsFor, matches, matchesSearch, matchRanges, highlight, isFilterEmpty,
   isFacetActive, activeFacetCount, encodeFilters, decodeFilters, sortMetrics, compareBy,
   type MealInput,
 } from '../lib/meals';
@@ -145,6 +145,57 @@ describe('matchesSearch', () => {
 
   it('treats an empty query as no filter', () => {
     expect(matchesSearch(hay, '   ')).toBe(true);
+  });
+});
+
+describe('highlight', () => {
+  const text = 'Cold Soak Couscous with Sun-Dried Tomato';
+
+  it('finds every occurrence of every term', () => {
+    expect(matchRanges(text, 'soak')).toEqual([[5, 9]]);
+    expect(matchRanges(text, 'co')).toEqual([[0, 2], [10, 12], [14, 16]]);
+  });
+
+  it('matches case-insensitively but reports ranges into the original text', () => {
+    const [[start, end]] = matchRanges(text, 'COUSCOUS');
+    expect(text.slice(start, end)).toBe('Couscous');
+  });
+
+  it('merges overlapping hits from different terms into one span', () => {
+    expect(matchRanges('couscous', 'cous couscous')).toEqual([[0, 8]]);
+  });
+
+  it('returns nothing for a blank or unmatched query', () => {
+    expect(matchRanges(text, '   ')).toEqual([]);
+    expect(matchRanges(text, 'salmon')).toEqual([]);
+  });
+
+  it('segments the text without losing or duplicating a character', () => {
+    const segments = highlight(text, 'soak tomato');
+    expect(segments.map((s) => s.text).join('')).toBe(text);
+    expect(segments.filter((s) => s.hit).map((s) => s.text)).toEqual(['Soak', 'Tomato']);
+  });
+
+  it('yields one untouched segment when there is nothing to paint', () => {
+    expect(highlight(text, '')).toEqual([{ text, hit: false }]);
+  });
+
+  it('handles a hit at either edge', () => {
+    expect(highlight('abc', 'a')).toEqual([
+      { text: 'a', hit: true },
+      { text: 'bc', hit: false },
+    ]);
+    expect(highlight('abc', 'c')).toEqual([
+      { text: 'ab', hit: false },
+      { text: 'c', hit: true },
+    ]);
+  });
+
+  it('lights up exactly what made the card match', () => {
+    const query = 'cold couscous';
+    expect(matchesSearch(text.toLowerCase(), query)).toBe(true);
+    expect(highlight(text, query).filter((s) => s.hit).map((s) => s.text))
+      .toEqual(['Cold', 'Couscous']);
   });
 });
 

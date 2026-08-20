@@ -133,6 +133,55 @@ export function matchesSearch(haystack: string, query: string): boolean {
   return q.split(/\s+/).every((term) => haystack.includes(term));
 }
 
+/** Character ranges of every query-term hit in `text`, ordered and merged so
+ *  overlapping hits from different terms become one span. Tokenised exactly
+ *  like `matchesSearch`, so what lights up on a card is what made it match. */
+export function matchRanges(text: string, query: string): [number, number][] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const hay = text.toLowerCase();
+  const hits: [number, number][] = [];
+  for (const term of q.split(/\s+/)) {
+    for (let from = 0; ; ) {
+      const at = hay.indexOf(term, from);
+      if (at === -1) break;
+      hits.push([at, at + term.length]);
+      from = at + 1;
+    }
+  }
+  hits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged: [number, number][] = [];
+  for (const [start, end] of hits) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
+
+/** One piece of text and whether it matched. The caller builds nodes from
+ *  these rather than a string of HTML, so a recipe title can hold an ampersand
+ *  or an angle bracket without anything having to be escaped. */
+export type Segment = { text: string; hit: boolean };
+
+/** Split `text` into alternating miss/hit segments. A blank or unmatched query
+ *  yields the single untouched segment, which is the caller's cue that there
+ *  is nothing to paint. */
+export function highlight(text: string, query: string): Segment[] {
+  const ranges = matchRanges(text, query);
+  if (ranges.length === 0) return [{ text, hit: false }];
+
+  const segments: Segment[] = [];
+  let at = 0;
+  for (const [start, end] of ranges) {
+    if (start > at) segments.push({ text: text.slice(at, start), hit: false });
+    segments.push({ text: text.slice(start, end), hit: true });
+    at = end;
+  }
+  if (at < text.length) segments.push({ text: text.slice(at), hit: false });
+  return segments;
+}
+
 /**
  * Whether a facet is actually narrowing anything.
  *

@@ -161,6 +161,7 @@ const fmtOunces = (oz: number) => (Number.isInteger(oz) ? `${oz}` : oz.toFixed(1
   import { FACETS, DEFAULT_SORT } from "../data/meals";
   import {
     matches, matchesSearch, activeFacetCount, encodeFilters, decodeFilters, compareBy,
+    highlight,
     type FilterState, type FacetValues, type SortMetrics,
   } from "../lib/meals";
 
@@ -185,7 +186,16 @@ const fmtOunces = (oz: number) => (Number.isInteger(oz) ? `${oz}` : oz.toFixed(1
     );
     const moreKeys = FACETS.filter((f) => f.group === "more").map((f) => f.key);
 
-    type Card = { el: HTMLElement; facets: FacetValues; search: string; metrics: SortMetrics };
+    type Card = {
+      el: HTMLElement;
+      facets: FacetValues;
+      search: string;
+      metrics: SortMetrics;
+      /** The two lines the query can be shown hitting, with the text they were
+       *  built with. Held rather than re-read because painting replaces their
+       *  children, so the DOM stops being a source of the original string. */
+      text: { el: HTMLElement; source: string }[];
+    };
 
     const cards: Card[] = Array.from(grid.querySelectorAll<HTMLElement>(".meal-card")).map((el) => ({
       el,
@@ -193,6 +203,9 @@ const fmtOunces = (oz: number) => (Number.isInteger(oz) ? `${oz}` : oz.toFixed(1
         FACETS.map((f) => [f.key, (el.dataset[f.key] ?? "").split("|").filter(Boolean)]),
       ),
       search: el.dataset.search ?? "",
+      text: Array.from(
+        el.querySelectorAll<HTMLElement>(".meal-card__title, .meal-card__blurb"),
+      ).map((node) => ({ el: node, source: node.textContent ?? "" })),
       metrics: {
         calOz: Number(el.dataset.mcaloz),
         weight: Number(el.dataset.mweight),
@@ -215,6 +228,30 @@ const fmtOunces = (oz: number) => (Number.isInteger(oz) ? `${oz}` : oz.toFixed(1
 
     const plural = (n: number) => (n === 1 ? "1 meal" : `${n} meals`);
 
+    /** Rebuild a line with its query hits wrapped in <mark>. Segments become
+     *  nodes rather than a string of HTML: a title with an ampersand in it goes
+     *  through unharmed, and there is no escaping to get wrong. */
+    const paint = (node: HTMLElement, source: string, query: string) => {
+      const segments = highlight(source, query);
+      if (segments.length === 1) {
+        // No hits. Only worth touching if the last query left marks behind.
+        if (node.childElementCount > 0) node.textContent = source;
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      for (const segment of segments) {
+        if (!segment.hit) {
+          frag.appendChild(document.createTextNode(segment.text));
+          continue;
+        }
+        const mark = document.createElement("mark");
+        mark.className = "meal-hit";
+        mark.textContent = segment.text;
+        frag.appendChild(mark);
+      }
+      node.replaceChildren(frag);
+    };
+
     const apply = (pushUrl = true) => {
       const filter = readState();
       const query = searchEl.value;
@@ -224,7 +261,12 @@ const fmtOunces = (oz: number) => (Number.isInteger(oz) ? `${oz}` : oz.toFixed(1
       for (const card of cards) {
         const show = matches(card.facets, filter) && matchesSearch(card.search, query);
         card.el.hidden = !show;
-        if (show) visible += 1;
+        if (!show) continue;
+        visible += 1;
+        // Only the cards on screen are repainted; a hidden one is painted on
+        // the pass that reveals it. A query that matched only an ingredient
+        // shows no mark, because the card does not print its ingredients.
+        for (const line of card.text) paint(line.el, line.source, query);
       }
 
       const ordered = [...cards].sort((a, b) => compareBy(sort, a.metrics, b.metrics));
