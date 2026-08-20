@@ -18,6 +18,11 @@ PAR=${PAR:-8}
 
 mkdir -p "$LEADS" "$JOBS"
 
+# Job files from an earlier run name cells that are now finished. Leaving them
+# in place would launch a session per stale file and re-scout completed cells,
+# so the set is rebuilt from scratch on every run.
+rm -f "$JOBS"/job-*.txt
+
 python3 - "$STATE/wave2-cells.json" "$JOBS" "$LEADS" <<'PY'
 import json, sys, os, pathlib
 
