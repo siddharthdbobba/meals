@@ -87,13 +87,13 @@ case "$LAYER" in
 
   5)
     say "writing recipe drafts"
-    "${NODE[@]}" "$ROOT/harvest/stage3.ts" --parallel 4 2>&1 | tee -a "$LOG"
+    "${NODE[@]}" "$ROOT/harvest/stage3.ts" --parallel 10 2>&1 | tee -a "$LOG"
     descend
     ;;
 
   6)
     say "quality gate"
-    "${NODE[@]}" "$ROOT/harvest/stage5-qa.ts" --parallel 4 2>&1 | tee -a "$LOG"
+    "${NODE[@]}" "$ROOT/harvest/stage5-qa.ts" --parallel 8 2>&1 | tee -a "$LOG"
     say "$(find "$ROOT/content" -name '*.md' | wc -l | tr -d ' ') recipes in content/"
     descend
     ;;
