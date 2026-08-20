@@ -57,6 +57,9 @@ export function facetViolations(r: Recipe): string[] {
   if (heat.has('no-cook') && r.cookMinutes > 0) {
     v.push('no-cook recipe claims cook time');
   }
+  if (heat.has('no-cook') && r.water === 'boiled') {
+    v.push('no-cook recipe claims boiled water');
+  }
   if (r.water === 'none' && r.waterMl > 0) {
     v.push('water is "none" but waterMl is above zero');
   }

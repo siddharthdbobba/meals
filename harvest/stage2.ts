@@ -37,9 +37,19 @@ type PageRow = {
 const BOILERPLATE_SAMPLE = 30;
 
 function loadPages(): PageRow[] {
+  // Deduplicated by URL. Shards used to be assigned domains by position, which
+  // re-shuffled whenever new leads arrived and let two shards record the same
+  // page. The assignment is stable now, but the records it already wrote are
+  // on disk and must not be counted twice.
+  const seen = new Set<string>();
   const out: PageRow[] = [];
   for (const f of readdirSync(STATE)) {
-    if (/^pages(-\d+)?\.jsonl$/.test(f)) out.push(...readJsonl<PageRow>(join(STATE, f)));
+    if (!/^pages(-\d+)?\.jsonl$/.test(f)) continue;
+    for (const row of readJsonl<PageRow>(join(STATE, f))) {
+      if (seen.has(row.url)) continue;
+      seen.add(row.url);
+      out.push(row);
+    }
   }
   return out;
 }

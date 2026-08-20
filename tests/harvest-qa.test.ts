@@ -43,6 +43,14 @@ describe('facetViolations', () => {
     expect(v.join(' ')).toMatch(/no-cook/i);
   });
 
+  it('catches no-cook that claims boiled water', () => {
+    // The site's own suite enforces this, and the gate did not, so a recipe
+    // listing no-cook alongside boiled water reached content/ and broke the
+    // build. The gate must be at least as strict as the thing it feeds.
+    const v = facetViolations(meal({ heatSource: ['canister-stove', 'no-cook'], water: 'boiled' }));
+    expect(v.join(' ')).toMatch(/no-cook/i);
+  });
+
   it('catches water none with a water volume', () => {
     expect(facetViolations(meal({ water: 'none', waterMl: 300 })).length).toBeGreaterThan(0);
   });

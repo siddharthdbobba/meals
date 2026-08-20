@@ -62,9 +62,17 @@ async function main() {
 
   const leads = loadLeads();
   const all = planDomains(leads);
-  // Round-robin rather than block assignment: the plan is sorted richest-first,
-  // so contiguous slices would hand one shard every large site.
-  const targets = all.filter((_, i) => i % shardCount === shardId).slice(0, domainLimit);
+  // Assign by a hash of the domain, not by position. Position was unstable:
+  // every new batch of scout leads re-ordered the plan, handing domains to a
+  // different shard, and because each shard keeps its own seen-set the new
+  // owner re-fetched pages the old owner already had. Hashing the domain name
+  // pins a domain to one shard for the life of the corpus.
+  const shardOf = (domain: string): number => {
+    let h = 5381;
+    for (let i = 0; i < domain.length; i += 1) h = ((h * 33) ^ domain.charCodeAt(i)) >>> 0;
+    return h % shardCount;
+  };
+  const targets = all.filter((t) => shardOf(t.domain) === shardId).slice(0, domainLimit);
   const seen = new SeenSet(SEEN);
   const attempts = new AttemptLog(ATTEMPTS);
   const fetcher = createFetcher({ cacheDir: CACHE, userAgent: UA, delayMs: 1500 });
