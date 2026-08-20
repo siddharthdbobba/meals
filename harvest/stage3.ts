@@ -92,6 +92,19 @@ Rules that matter:
 - Every facet value must come from the allowed vocabulary exactly. Do not invent values.
 - caloriesPerServing, ouncesPerServing, and proteinGrams are your best honest estimate from the ingredients. ouncesPerServing is the DRY PACKED weight carried, excluding water added at camp.
 - steps must be actually cookable on the heatSource you chose.
+- DIETARY TAGS ARE CLAIMS ABOUT EVERY INGREDIENT, and they are the most common
+  reason a recipe is rejected. Check each one against your own ingredient list
+  before you write it. Leave the array EMPTY rather than guess:
+    vegan        no meat, fish, dairy, cheese, butter, egg, honey, whey
+    vegetarian   no meat, fish, or seafood of any kind
+    dairy-free   no milk, cheese, butter, cream, yogurt, ghee, whey
+    gluten-free  no wheat, flour, pasta, noodles, ramen, couscous, barley,
+                 bread, tortillas, bulgur, or seitan
+    nut-free     no peanuts, almonds, cashews, walnuts, pecans, or nut butter
+  A tag you leave off costs nothing. A tag that is wrong is a filter that lies
+  to someone with an allergy.
+- If any heatSource is "no-cook", then cookMinutes must be 0 and water must not
+  be "boiled".
 
 ALLOWED FACET VALUES:
 ${VOCAB}
