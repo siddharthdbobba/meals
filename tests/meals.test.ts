@@ -348,7 +348,21 @@ function parseFrontmatter(raw: string): Record<string, unknown> {
   return out;
 }
 
-const files = readdirSync(mealsDir).filter((f) => f.endsWith('.md'));
+/**
+ * Every recipe, including the sharded `content/<letter>/` directories the
+ * harvest pipeline writes into. A flat readdir silently stopped covering the
+ * corpus the moment sharding began.
+ */
+function allRecipeFiles(dir: string, prefix = ''): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) out.push(...allRecipeFiles(join(dir, entry.name), join(prefix, entry.name)));
+    else if (entry.name.endsWith('.md')) out.push(join(prefix, entry.name));
+  }
+  return out;
+}
+
+const files = allRecipeFiles(mealsDir);
 const recipes = files.map((f) => ({
   file: f,
   data: mealSchema.parse(parseFrontmatter(readFileSync(join(mealsDir, f), 'utf8'))),

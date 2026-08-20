@@ -17,7 +17,7 @@
 import {
   TRIP_STYLES, SLOTS, HEAT_SOURCES, WATER, CLEANUP, DIETARY,
   HOME_PREP, SHELF_LIFE, SKILL, COST,
-} from "./data/meals";
+} from "./data/meals.ts";
 
 /** `z` is typed loosely because the two callers supply different copies of
  *  zod; the shape they produce is identical. */
