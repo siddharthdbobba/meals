@@ -1,0 +1,283 @@
+---
+import { getCollection } from "astro:content";
+import "../styles/meals.css";
+import { CORE_FACETS, MORE_FACETS, FACETS, SORTS, DEFAULT_SORT, facetLabel } from "../data/meals";
+import { derive, facetsFor, searchText, sortMetrics, type MealInput } from "../lib/meals";
+
+/**
+ * The meals index, as a self-contained block. The consuming site supplies the
+ * page shell and the masthead around it and owns nothing else here.
+ *
+ * Every recipe is rendered at build time with its facet values
+ * stamped onto the card as data attributes; the client script only decides what
+ * stays visible. Without JavaScript the filter form never appears and the full
+ * library is still readable, which is the reason for rendering everything.
+ *
+ * Every chip opens checked, so the page starts by showing what the library
+ * contains and narrowing is a matter of switching things off. Clear all
+ * switches every chip off, which is the same unfiltered result set reached from
+ * the other direction, and the starting point for picking a few options back
+ * up; Select all puts you back at the opening state.
+ */
+
+const entries = (await getCollection("meals"))
+  .filter((m) => !m.data.draft)
+  .map((m) => {
+    const data = m.data as unknown as MealInput;
+    return {
+      id: m.id,
+      data: m.data,
+      facets: facetsFor(data),
+      derived: derive(data),
+      metrics: sortMetrics(data),
+      search: searchText(data),
+    };
+  })
+  .sort((a, b) => b.metrics.calOz - a.metrics.calOz || a.metrics.title.localeCompare(b.metrics.title));
+
+const fmtOunces = (oz: number) => (Number.isInteger(oz) ? `${oz}` : oz.toFixed(1));
+---
+<section class="meals-page">
+  <div class="container">
+
+    <form class="meal-filters" id="meal-filters" hidden>
+      <div class="meal-filters__bar">
+        <label class="meal-search">
+          <span class="visually-hidden">Search meals</span>
+          <input
+            type="search"
+            id="meal-search"
+            placeholder="Search meals and ingredients"
+            autocomplete="off"
+          />
+        </label>
+        <label class="meal-sort">
+          <span>Sort</span>
+          <select id="meal-sort">
+            {SORTS.map((s) => (
+              <option value={s.value} selected={s.value === DEFAULT_SORT}>{s.label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div class="meal-filters__core">
+        {CORE_FACETS.map((facet) => (
+          <fieldset class="facet">
+            <legend class="facet__label">{facet.label}</legend>
+            <div class="facet__options">
+              {facet.options.map((option) => (
+                <label class="chip">
+                  <input type="checkbox" name={facet.key} value={option.value} checked />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        ))}
+      </div>
+
+      <details class="meal-filters__more">
+        <summary><span class="meal-more__label">More filters</span><span class="meal-more__count" id="meal-more-count" hidden></span></summary>
+        <div class="meal-filters__grid">
+          {MORE_FACETS.map((facet) => (
+            <fieldset class="facet">
+              <legend class="facet__label">{facet.label}</legend>
+              {facet.hint && <p class="facet__hint">{facet.hint}</p>}
+              <div class="facet__options">
+                {facet.options.map((option) => (
+                  <label class="chip">
+                    <input type="checkbox" name={facet.key} value={option.value} checked />
+                    <span>{option.label}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ))}
+        </div>
+      </details>
+
+      <div class="meal-filters__status">
+        <p class="meal-count" id="meal-count" aria-live="polite">{entries.length} meals</p>
+        <div class="meal-filters__actions">
+          <button type="button" class="meal-clear" id="meal-select-all">Select all</button>
+          <button type="button" class="meal-clear" id="meal-clear">Clear all</button>
+        </div>
+      </div>
+    </form>
+
+    <div class="meal-grid" id="meal-grid">
+      {entries.map((entry) => (
+        <article
+          class="meal-card"
+          data-style={entry.facets.style.join("|")}
+          data-slot={entry.facets.slot.join("|")}
+          data-heat={entry.facets.heat.join("|")}
+          data-time={entry.facets.time.join("|")}
+          data-caloz={entry.facets.caloz.join("|")}
+          data-cal={entry.facets.cal.join("|")}
+          data-protein={entry.facets.protein.join("|")}
+          data-cleanup={entry.facets.cleanup.join("|")}
+          data-diet={entry.facets.diet.join("|")}
+          data-prep={entry.facets.prep.join("|")}
+          data-shelf={entry.facets.shelf.join("|")}
+          data-skill={entry.facets.skill.join("|")}
+          data-cost={entry.facets.cost.join("|")}
+          data-search={entry.search}
+          data-mcaloz={entry.metrics.calOz}
+          data-mweight={entry.metrics.weight}
+          data-mminutes={entry.metrics.minutes}
+          data-mcalories={entry.metrics.calories}
+          data-mtitle={entry.metrics.title}
+        >
+          <a class="meal-card__link" href={`/meals/${entry.id}/`}>
+            <h2 class="meal-card__title">{entry.data.title}</h2>
+            <p class="meal-card__blurb">{entry.data.blurb}</p>
+          </a>
+          <dl class="meal-card__stats">
+            <div><dt>cal/oz</dt><dd>{entry.derived.caloriesPerOunce}</dd></div>
+            <div><dt>weight</dt><dd>{fmtOunces(entry.data.ouncesPerServing)} oz</dd></div>
+            <div><dt>time</dt><dd>{entry.derived.totalMinutes} min</dd></div>
+          </dl>
+          <ul class="meal-card__pills">
+            {entry.data.slot.map((s) => <li>{facetLabel("slot", s)}</li>)}
+            {entry.data.heatSource.map((h) => <li class="is-heat">{facetLabel("heat", h)}</li>)}
+          </ul>
+        </article>
+      ))}
+    </div>
+
+    <p class="meal-empty" id="meal-empty" hidden>
+      Nothing matches all of that. Loosen a filter and try again.
+    </p>
+
+    <div class="meals-back">
+      <a class="mono" href="/">back to home_</a>
+    </div>
+  </div>
+</section>
+
+<script>
+  import { FACETS, DEFAULT_SORT } from "../data/meals";
+  import {
+    matches, matchesSearch, activeFacetCount, encodeFilters, decodeFilters, compareBy,
+    type FilterState, type FacetValues, type SortMetrics,
+  } from "../lib/meals";
+
+  const form = document.getElementById("meal-filters") as HTMLFormElement | null;
+  const grid = document.getElementById("meal-grid");
+  const countEl = document.getElementById("meal-count");
+  const emptyEl = document.getElementById("meal-empty");
+  const clearEl = document.getElementById("meal-clear") as HTMLButtonElement | null;
+  const selectAllEl = document.getElementById("meal-select-all") as HTMLButtonElement | null;
+  const searchEl = document.getElementById("meal-search") as HTMLInputElement | null;
+  const sortEl = document.getElementById("meal-sort") as HTMLSelectElement | null;
+  const moreCountEl = document.getElementById("meal-more-count");
+  const moreEl = document.querySelector(".meal-filters__more") as HTMLDetailsElement | null;
+
+  if (form && grid && countEl && emptyEl && clearEl && selectAllEl && searchEl && sortEl) {
+    // The form ships hidden so a visitor without JavaScript never sees controls
+    // that cannot work. Everything below this point implies JavaScript ran.
+    form.hidden = false;
+
+    const validValues: Record<string, string[]> = Object.fromEntries(
+      FACETS.map((f) => [f.key, f.options.map((o) => o.value)]),
+    );
+    const moreKeys = FACETS.filter((f) => f.group === "more").map((f) => f.key);
+
+    type Card = { el: HTMLElement; facets: FacetValues; search: string; metrics: SortMetrics };
+
+    const cards: Card[] = Array.from(grid.querySelectorAll<HTMLElement>(".meal-card")).map((el) => ({
+      el,
+      facets: Object.fromEntries(
+        FACETS.map((f) => [f.key, (el.dataset[f.key] ?? "").split("|").filter(Boolean)]),
+      ),
+      search: el.dataset.search ?? "",
+      metrics: {
+        calOz: Number(el.dataset.mcaloz),
+        weight: Number(el.dataset.mweight),
+        minutes: Number(el.dataset.mminutes),
+        calories: Number(el.dataset.mcalories),
+        title: el.dataset.mtitle ?? "",
+      },
+    }));
+
+    const boxes = Array.from(form.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+
+    const readState = (): FilterState => {
+      const state: FilterState = {};
+      for (const box of boxes) {
+        if (!box.checked) continue;
+        (state[box.name] ||= []).push(box.value);
+      }
+      return state;
+    };
+
+    const plural = (n: number) => (n === 1 ? "1 meal" : `${n} meals`);
+
+    const apply = (pushUrl = true) => {
+      const filter = readState();
+      const query = searchEl.value;
+      const sort = sortEl.value;
+
+      let visible = 0;
+      for (const card of cards) {
+        const show = matches(card.facets, filter) && matchesSearch(card.search, query);
+        card.el.hidden = !show;
+        if (show) visible += 1;
+      }
+
+      const ordered = [...cards].sort((a, b) => compareBy(sort, a.metrics, b.metrics));
+      for (const card of ordered) grid.appendChild(card.el);
+
+      countEl.textContent = plural(visible);
+      emptyEl.hidden = visible > 0;
+      // A count on the disclosure so filters hidden inside it cannot be
+      // forgotten about while they are still narrowing the results.
+      if (moreCountEl) {
+        const narrowing = activeFacetCount(filter, validValues, moreKeys);
+        moreCountEl.hidden = narrowing === 0;
+        moreCountEl.textContent = String(narrowing);
+      }
+
+      if (pushUrl) {
+        const qs = encodeFilters(filter, sort, query, validValues);
+        history.replaceState(null, "", `${location.pathname}${qs}`);
+      }
+    };
+
+    const restore = () => {
+      const { filter, sort, query } = decodeFilters(location.search, validValues);
+      for (const box of boxes) box.checked = (filter[box.name] ?? []).includes(box.value);
+      searchEl.value = query;
+      sortEl.value = sort || DEFAULT_SORT;
+      if (moreEl && activeFacetCount(filter, validValues, moreKeys) > 0) moreEl.open = true;
+      apply(false);
+    };
+
+    form.addEventListener("change", () => apply());
+    form.addEventListener("submit", (e) => e.preventDefault());
+
+    let timer = 0;
+    searchEl.addEventListener("input", () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => apply(), 120);
+    });
+
+    // Both buttons land on the same result set, because a facet with every
+    // option selected and one with none both mean "no constraint". They differ
+    // in where they leave you: Select all is the subtractive starting point,
+    // Clear all the additive one.
+    const setAll = (checked: boolean) => {
+      for (const box of boxes) box.checked = checked;
+      searchEl.value = "";
+      apply();
+    };
+
+    clearEl.addEventListener("click", () => setAll(false));
+    selectAllEl.addEventListener("click", () => setAll(true));
+
+    window.addEventListener("popstate", restore);
+    restore();
+  }
+</script>

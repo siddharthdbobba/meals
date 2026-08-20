@@ -9,9 +9,10 @@ import {
   type MealInput,
 } from '../lib/meals';
 import {
-  FACETS, FACET_KEYS, TRIP_STYLES, SLOTS, HEAT_SOURCES, WATER, CLEANUP,
+  FACETS, FACET_KEYS, TRIP_STYLES, SLOTS, HEAT_SOURCES, CLEANUP,
   DIETARY, HOME_PREP, SHELF_LIFE, SKILL, COST,
 } from '../data/meals';
+import { mealFields } from '../schema';
 
 const root = join(fileURLToPath(new URL('..', import.meta.url)));
 const mealsDir = join(root, 'content');
@@ -230,43 +231,8 @@ describe('compareBy', () => {
 
 // ------------------------------------------------- content: schema and coverage
 
-/** The schema, mirrored from the consuming site's `src/content.config.ts`.
- *  It lives here as well as there because this repo has to be able to validate
- *  its own content without booting Astro; the `facet vocabulary` suite below
- *  keeps the two definitions from drifting apart. */
-const mealSchema = z.object({
-  title: z.string(),
-  blurb: z.string(),
-  tripStyle: z.array(z.enum(TRIP_STYLES)).min(1),
-  slot: z.array(z.enum(SLOTS)).min(1),
-  heatSource: z.array(z.enum(HEAT_SOURCES)).min(1),
-  prepMinutes: z.number().int().min(0),
-  cookMinutes: z.number().int().min(0),
-  caloriesPerServing: z.number().int().positive(),
-  ouncesPerServing: z.number().positive(),
-  proteinGrams: z.number().int().min(0),
-  water: z.enum(WATER),
-  waterMl: z.number().int().min(0).default(0),
-  cleanup: z.enum(CLEANUP),
-  dietary: z.array(z.enum(DIETARY)).default([]),
-  homePrep: z.enum(HOME_PREP),
-  shelfLife: z.enum(SHELF_LIFE),
-  servings: z.number().int().positive(),
-  scalable: z.boolean().default(true),
-  skill: z.enum(SKILL),
-  cost: z.enum(COST),
-  ingredients: z.array(z.object({
-    item: z.string(),
-    amount: z.string(),
-    note: z.string().optional(),
-  })).min(1),
-  steps: z.array(z.string()).min(1),
-  packing: z.string().optional(),
-  variations: z.array(z.string()).default([]),
-  source: z.string().optional(),
-  updated: z.coerce.date().optional(),
-  draft: z.boolean().default(false),
-});
+/** The one schema definition, shared with the consuming site's content config. */
+const mealSchema = z.object(mealFields(z));
 
 /** A deliberately small YAML reader: enough for the subset of YAML the recipe
  *  frontmatter uses (scalars, inline arrays, and lists of one-level maps), and

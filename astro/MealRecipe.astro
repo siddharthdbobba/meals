@@ -1,0 +1,119 @@
+---
+import { render, type CollectionEntry } from "astro:content";
+import "../styles/meals.css";
+import { facetLabel } from "../data/meals";
+import { derive, type MealInput } from "../lib/meals";
+
+interface Props {
+  /** One entry from the `meals` collection, handed in by the route. */
+  meal: CollectionEntry<"meals">;
+}
+
+const { meal } = Astro.props;
+const { Content } = await render(meal);
+const d = meal.data;
+const derived = derive(d as unknown as MealInput);
+
+const fmtOunces = (oz: number) => (Number.isInteger(oz) ? `${oz}` : oz.toFixed(1));
+
+const stats = [
+  { label: "calories", value: `${d.caloriesPerServing}` },
+  { label: "weight", value: `${fmtOunces(d.ouncesPerServing)} oz` },
+  { label: "cal / oz", value: `${derived.caloriesPerOunce}` },
+  { label: "protein", value: `${d.proteinGrams} g` },
+  { label: "serves", value: `${d.servings}${d.scalable ? ", scales" : ""}` },
+  // Prep and cook are shown apart rather than as one total, because five
+  // minutes of chopping at home and five minutes of fuel burned at camp are not
+  // the same cost. A zero is stated outright: it is the useful answer.
+  { label: "prep", value: `${d.prepMinutes} min` },
+  { label: "cook", value: `${d.cookMinutes} min` },
+  { label: "total time", value: `${derived.totalMinutes} min` },
+  {
+    label: "water",
+    value: d.water === "none" ? "none" : `${d.waterMl} ml ${d.water}`,
+  },
+  { label: "cost", value: d.cost },
+];
+
+const pillGroups = [
+  { key: "slot", values: d.slot },
+  { key: "heat", values: d.heatSource },
+  { key: "style", values: d.tripStyle },
+  { key: "diet", values: d.dietary },
+  { key: "cleanup", values: [d.cleanup] },
+  { key: "prep", values: [d.homePrep] },
+  { key: "shelf", values: [d.shelfLife] },
+  { key: "skill", values: [d.skill] },
+].filter((g) => g.values.length > 0);
+---
+<article class="meal-page">
+  <div class="meal-wrap">
+
+    <p class="meal-page__eyebrow mono"><a href="/meals/">camp meals</a></p>
+    <h1 class="meal-page__title">{d.title}</h1>
+    <p class="meal-page__blurb">{d.blurb}</p>
+
+    <dl class="meal-page__stats">
+      {stats.map((s) => (
+        <div><dt>{s.label}</dt><dd>{s.value}</dd></div>
+      ))}
+    </dl>
+    <p class="meal-page__caveat">
+      Calorie and protein figures are my own estimates, good enough for planning a food bag and not meant as precise nutrition data.
+    </p>
+
+    <ul class="meal-page__pills">
+      {pillGroups.map((group) => group.values.map((v) => (
+        <li class={`is-${group.key}`}>{facetLabel(group.key, v)}</li>
+      )))}
+    </ul>
+
+    <section class="meal-page__section">
+      <h2>Ingredients</h2>
+      <table class="meal-ingredients">
+        <tbody>
+          {d.ingredients.map((ing) => (
+            <tr>
+              <th scope="row">{ing.item}</th>
+              <td class="meal-ingredients__amount">{ing.amount}</td>
+              <td class="meal-ingredients__note">{ing.note ?? ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="meal-page__section">
+      <h2>Method</h2>
+      <ol class="meal-steps">
+        {d.steps.map((step) => <li>{step}</li>)}
+      </ol>
+    </section>
+
+    <section class="meal-page__section meal-page__prose">
+      <Content />
+    </section>
+
+    {d.packing && (
+      <section class="meal-page__section">
+        <h2>Packing</h2>
+        <p>{d.packing}</p>
+      </section>
+    )}
+
+    {d.variations.length > 0 && (
+      <section class="meal-page__section">
+        <h2>Variations</h2>
+        <ul class="meal-variations">
+          {d.variations.map((v) => <li>{v}</li>)}
+        </ul>
+      </section>
+    )}
+
+    {d.source && <p class="meal-page__source">{d.source}</p>}
+
+    <div class="meals-back">
+      <a class="mono" href="/meals/">back to all meals_</a>
+    </div>
+  </div>
+</article>
