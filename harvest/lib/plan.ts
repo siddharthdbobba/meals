@@ -70,7 +70,12 @@ export function sameSite(a: string, b: string): boolean {
  * recipes come from one blog is that blog with extra steps.
  */
 export function planDomains(leads: Lead[], opts: { perDomainCap?: number } = {}): Target[] {
-  const cap = opts.perDomainCap ?? 300;
+  // 40, not 300. The budget divided by this is how many domains the crawl can
+  // ever reach: at 300 it stopped at ~120 of 929, spending everything on broad
+  // forums where recipes are incidental and never reaching the small personal
+  // blogs the scouts went looking for. Breadth first; depth is recoverable by
+  // re-running with a higher cap once the tail is in.
+  const cap = opts.perDomainCap ?? 40;
   const byDomain = new Map<string, { seeds: Set<string>; estimate: number }>();
 
   for (const lead of leads) {
