@@ -162,7 +162,12 @@ describe('createFetcher', () => {
     const f = createFetcher({ cacheDir: dir, userAgent: 'm', fetchImpl: net.impl, sleep: s.sleep, delayMs: 1000 });
     await f.fetchPage('https://x.com/a');
     await f.fetchPage('https://x.com/b');
-    expect(s.waits).toEqual([1000]);
+    // The gap is `delay minus time already elapsed`, so the exact figure moves
+    // with real clock time under load. What must hold is that it waited once,
+    // for very nearly the full delay.
+    expect(s.waits).toHaveLength(1);
+    expect(s.waits[0]).toBeGreaterThan(900);
+    expect(s.waits[0]).toBeLessThanOrEqual(1000);
   });
 
   it('does not make one host wait for another', async () => {
