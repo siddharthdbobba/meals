@@ -119,6 +119,15 @@ describe('plausibilityViolations', () => {
     })).length).toBeGreaterThan(0);
   });
 
+  it('enforces the floor the site itself enforces, whatever the trip', () => {
+    // tests/meals.test.ts requires every recipe above 30 cal/oz. The gate has
+    // to be at least as strict, or it publishes something that breaks the build.
+    expect(plausibilityViolations(meal({
+      tripStyle: ['car-camping'], shelfLife: 'day-one',
+      caloriesPerServing: 270, ouncesPerServing: 10,
+    })).length).toBeGreaterThan(0);
+  });
+
   it('allows a watery car-camping dish to be watery', () => {
     // Corn on the cob really is about 35 cal/oz. The density floor exists to
     // catch fabricated numbers for food carried dry, not to forbid fresh

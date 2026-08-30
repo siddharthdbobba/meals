@@ -104,7 +104,11 @@ export function plausibilityViolations(r: Recipe): string[] {
   // Pure fat is roughly 250 cal/oz, so nothing beats that whatever the trip.
   if (calPerOz > 200) v.push(`impossible calorie density: ${Math.round(calPerOz)} cal/oz`);
 
-  // The floor only applies to food actually carried dry. Corn on the cob is
+  // The site's own suite rejects anything at or below 30 cal/oz, so the gate
+  // must too: publishing below it breaks the build rather than the recipe.
+  if (calPerOz <= 30) v.push(`below the library's floor: ${Math.round(calPerOz)} cal/oz`);
+
+  // A stricter floor applies to food actually carried dry. Corn on the cob is
   // genuinely 35 cal/oz because it is mostly water, and a car-camping recipe
   // built on fresh produce out of a cooler is not lying about its numbers.
   const carried =

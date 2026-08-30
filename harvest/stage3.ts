@@ -123,7 +123,7 @@ title, blurb, tripStyle[], slot[], heatSource[], prepMinutes, cookMinutes, calor
 body is the markdown prose that follows the frontmatter: two short paragraphs.`;
 }
 
-function askClaude(prompt: string, model: string | null): Promise<string> {
+function askClaude(prompt: string, model: string | null): Promise<{ out: string; err: string }> {
   return new Promise((resolve) => {
     const args = ['-p', '--permission-mode', 'bypassPermissions'];
     if (model) args.push('--model', model);
@@ -131,13 +131,18 @@ function askClaude(prompt: string, model: string | null): Promise<string> {
 
     const child = spawn('claude', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
+    let err = '';
     child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', () => {});
+    // stderr is kept, not discarded. Throwing it away is what hid a rate limit
+    // behind seventeen thousand "reply was not valid JSON" quarantines.
+    child.stderr.on('data', (d) => { err += d; });
     const timer = setTimeout(() => child.kill('SIGKILL'), TIMEOUT_MS);
-    child.on('close', () => { clearTimeout(timer); resolve(out); });
-    child.on('error', () => { clearTimeout(timer); resolve(''); });
+    child.on('close', () => { clearTimeout(timer); resolve({ out, err }); });
+    child.on('error', (e) => { clearTimeout(timer); resolve({ out: '', err: String(e) }); });
   });
 }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** A draft filename nothing else has claimed. */
 function freeDraft(slug: string): { slug: string; path: string } {
@@ -151,14 +156,36 @@ function freeDraft(slug: string): { slug: string; path: string } {
   return { slug: candidate, path: join(DRAFTS, `${candidate}.json`) };
 }
 
-async function transform(c: Candidate, model: string | null): Promise<'written' | 'quarantined'> {
+async function transform(
+  c: Candidate,
+  model: string | null,
+): Promise<'written' | 'quarantined' | 'deferred'> {
   let errors: string[] | undefined;
+  // The last reply, kept so a quarantine record can show what was actually
+  // said. Without it, "reply was not valid JSON" is a verdict with no evidence
+  // behind it, and every diagnosis of a bad run is a guess.
+  let lastReply = '';
+  let lastStderr = '';
 
   // Two attempts: the second is told exactly which schema rules it broke,
   // which recovers most failures (a stray facet value, a missing field).
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const reply = await askClaude(buildPrompt(c, errors), model);
-    const parsed = parseRecipeJson(reply);
+    const { out, err } = await askClaude(buildPrompt(c, errors), model);
+    lastReply = out;
+    lastStderr = err;
+
+    // An empty reply is the CLI failing, not the model answering badly —
+    // usually a rate limit. Treating it as a rejection burned the candidate
+    // permanently for a condition that clears on its own, so it is deferred
+    // instead: not written, not marked done, retried on a later run.
+    if (out.trim() === '') {
+      appendJsonl(join(STATE, 'stage3-deferred.jsonl'), { url: c.url, stderr: err.slice(0, 300) });
+      await sleep(5_000 + attempt * 10_000);
+      if (attempt === 1) return 'deferred';
+      continue;
+    }
+
+    const parsed = parseRecipeJson(out);
 
     if (!parsed) {
       errors = ['reply was not valid JSON'];
@@ -186,7 +213,11 @@ async function transform(c: Candidate, model: string | null): Promise<'written' 
   mkdirSync(QUARANTINE, { recursive: true });
   writeFileSync(
     join(QUARANTINE, `${slugFor(c.title) || 'untitled'}-${Date.now()}.json`),
-    JSON.stringify({ candidate: c, errors }, null, 2),
+    JSON.stringify(
+      { candidate: c, errors, reply: lastReply.slice(0, 4_000), stderr: lastStderr.slice(0, 1_000) },
+      null,
+      2,
+    ),
     'utf8',
   );
   return 'quarantined';
@@ -210,6 +241,7 @@ async function main() {
 
   let written = 0;
   let quarantined = 0;
+  let deferred = 0;
   let next = 0;
 
   const worker = async () => {
@@ -219,21 +251,30 @@ async function main() {
       try {
         const result = await transform(c, model);
         if (result === 'written') written += 1;
+        else if (result === 'deferred') { deferred += 1; continue; }
         else quarantined += 1;
-      } catch {
+      } catch (e) {
+        // Silently counting these hid a defect for thousands of candidates:
+        // the failure was an exception, not a schema rejection, so no
+        // quarantine file was ever written to explain it.
         quarantined += 1;
+        appendJsonl(join(STATE, 'stage3-errors.jsonl'), {
+          url: c.url,
+          error: (e as Error).message,
+          stack: (e as Error).stack?.split('\n').slice(0, 3).join(' | '),
+        });
       }
       // Marked done either way: a candidate that failed twice with the schema
       // errors in hand will not do better on a third identical attempt.
       done.add(c.url);
-      if ((written + quarantined) % 10 === 0) {
-        console.log(`  ${written} written, ${quarantined} quarantined`);
+      if ((written + quarantined + deferred) % 10 === 0) {
+        console.log(`  ${written} written, ${quarantined} quarantined, ${deferred} deferred`);
       }
     }
   };
 
   await Promise.all(Array.from({ length: Math.min(parallel, pending.length) }, worker));
-  console.log(`stage 3 done: ${written} drafts written, ${quarantined} quarantined`);
+  console.log(`stage 3 done: ${written} drafts written, ${quarantined} quarantined, ${deferred} deferred for a later run`);
 }
 
 main().catch((e) => {
