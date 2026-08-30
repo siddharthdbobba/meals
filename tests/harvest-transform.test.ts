@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { slugFor, shardFor, toFrontmatter, renderRecipe, parseRecipeJson, validateRecipe } from '../harvest/lib/transform';
+import { slugFor, shardFor, toFrontmatter, renderRecipe, parseRecipeJson, validateRecipe, cliFailureReason } from '../harvest/lib/transform';
 import { mealFields } from '../schema';
 
 const valid = {
@@ -178,5 +178,28 @@ describe('validateRecipe', () => {
 
   it('requires a body so the page is not just frontmatter', () => {
     expect(validateRecipe({ ...valid, body: '' }).ok).toBe(false);
+  });
+});
+
+describe('cliFailureReason', () => {
+  it('names the failure the CLI prints to stdout when it is not logged in', () => {
+    // The exact string a cron-launched run received 1,299 times in a row,
+    // each one recorded as a malformed recipe and the candidate thrown away.
+    expect(cliFailureReason('Not logged in \u00b7 Please run /login\n')).toBe('not logged in');
+  });
+
+  it('names a rate limit, bad credentials, and an empty reply', () => {
+    expect(cliFailureReason('Claude usage limit reached')).toBe('rate limited');
+    expect(cliFailureReason('Invalid API key')).toBe('bad credentials');
+    expect(cliFailureReason('   ')).toBe('empty reply');
+  });
+
+  it('does not call a real recipe a failure because its prose says error', () => {
+    const recipe = JSON.stringify({
+      title: 'Camp Chili',
+      body: 'A common error is boiling the beans dry. Unauthorized substitutions welcome. '
+        + 'x'.repeat(500),
+    });
+    expect(cliFailureReason(recipe)).toBeNull();
   });
 });

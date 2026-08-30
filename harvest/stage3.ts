@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendJsonl, readJsonl, SeenSet } from './lib/queue.ts';
-import { slugFor, parseRecipeJson, validateRecipe } from './lib/transform.ts';
+import { slugFor, parseRecipeJson, validateRecipe, cliFailureReason } from './lib/transform.ts';
 import {
   TRIP_STYLES, SLOTS, HEAT_SOURCES, WATER, CLEANUP, DIETARY,
   HOME_PREP, SHELF_LIFE, SKILL, COST,
@@ -174,12 +174,19 @@ async function transform(
     lastReply = out;
     lastStderr = err;
 
-    // An empty reply is the CLI failing, not the model answering badly —
-    // usually a rate limit. Treating it as a rejection burned the candidate
-    // permanently for a condition that clears on its own, so it is deferred
-    // instead: not written, not marked done, retried on a later run.
-    if (out.trim() === '') {
-      appendJsonl(join(STATE, 'stage3-deferred.jsonl'), { url: c.url, stderr: err.slice(0, 300) });
+    // A reply that is the CLI failing — no login, a rate limit, no credit —
+    // is not the model answering badly. Treating it as a rejection burned the
+    // candidate permanently for a condition that has nothing to do with the
+    // page, so it is deferred instead: not written, not marked done, retried
+    // on a later run.
+    const failure = cliFailureReason(out);
+    if (failure) {
+      appendJsonl(join(STATE, 'stage3-deferred.jsonl'), {
+        url: c.url,
+        reason: failure,
+        reply: out.trim().slice(0, 200),
+        stderr: err.slice(0, 300),
+      });
       await sleep(5_000 + attempt * 10_000);
       if (attempt === 1) return 'deferred';
       continue;
@@ -244,14 +251,29 @@ async function main() {
   let deferred = 0;
   let next = 0;
 
+  // A machine failure — not logged in, rate limited, out of credit — will hit
+  // the next candidate exactly as it hit this one. Once a handful in a row
+  // defer, the run stops: grinding through the whole queue in that state
+  // produces nothing and, before deferral existed, destroyed the queue.
+  let deferredInARow = 0;
+  let halted: string | null = null;
+
   const worker = async () => {
-    while (next < pending.length) {
+    while (next < pending.length && !halted) {
       const c = pending[next];
       next += 1;
       try {
         const result = await transform(c, model);
+        if (result === 'deferred') {
+          deferred += 1;
+          deferredInARow += 1;
+          if (deferredInARow >= 5) {
+            halted = 'the CLI is failing on every candidate; see stage3-deferred.jsonl';
+          }
+          continue;
+        }
+        deferredInARow = 0;
         if (result === 'written') written += 1;
-        else if (result === 'deferred') { deferred += 1; continue; }
         else quarantined += 1;
       } catch (e) {
         // Silently counting these hid a defect for thousands of candidates:
@@ -274,7 +296,9 @@ async function main() {
   };
 
   await Promise.all(Array.from({ length: Math.min(parallel, pending.length) }, worker));
+  if (halted) console.error(`stage 3 halted: ${halted}`);
   console.log(`stage 3 done: ${written} drafts written, ${quarantined} quarantined, ${deferred} deferred for a later run`);
+  if (halted) process.exitCode = 1;
 }
 
 main().catch((e) => {

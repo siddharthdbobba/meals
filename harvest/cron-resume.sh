@@ -18,6 +18,14 @@ LOG="$STATE/cron.log"
 INTERVAL=$((5 * 3600 + 5 * 60))   # 5h05m
 
 export PATH="/Users/sbobba/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# cron does not export USER, and without it the claude CLI cannot find its
+# credentials: it prints "Not logged in · Please run /login" and exits. Every
+# stage that asks a model runs unauthenticated, which is how a cron-launched
+# chain quietly discarded thousands of candidates it never sent anywhere.
+export USER=sbobba
+export LOGNAME=sbobba
+export HOME=/Users/sbobba
 mkdir -p "$STATE"
 
 now=$(date +%s)

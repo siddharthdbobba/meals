@@ -89,6 +89,36 @@ export function renderRecipe(recipe: Record<string, unknown>, source: string): s
   return `---\n${toFrontmatter({ ...fields, source })}\n---\n\n${String(body ?? '').trim()}\n`;
 }
 
+/**
+ * Whether a reply is the CLI failing rather than the model answering.
+ *
+ * `claude -p` prints "Not logged in · Please run /login" to STDOUT and exits 1.
+ * A caller that only checks for an empty reply sees a non-empty string that is
+ * not JSON, calls the candidate malformed, and discards it — which is how a
+ * single missing environment variable in a cron job burned 23,000 candidates
+ * that were never shown to a model at all.
+ *
+ * Every pattern here is a condition of the machine, not of the page: it will
+ * be identical for the next candidate, so the run should stop, not continue.
+ */
+export function cliFailureReason(reply: string): string | null {
+  const head = reply.trim().slice(0, 400);
+  if (head === '') return 'empty reply';
+  const conditions: [RegExp, string][] = [
+    [/not logged in|please run \/login|\/login to continue/i, 'not logged in'],
+    [/usage limit reached|rate limit|too many requests|429/i, 'rate limited'],
+    [/invalid api key|authentication_error|unauthorized|401/i, 'bad credentials'],
+    [/credit balance is too low|insufficient (credit|quota)/i, 'out of credit'],
+    [/^execution error|^error: /i, 'cli error'],
+  ];
+  for (const [pattern, reason] of conditions) {
+    // Only a short reply is a failure notice; a real recipe that happens to
+    // mention "error" somewhere in its prose is not.
+    if (pattern.test(head) && reply.trim().length < 400) return reason;
+  }
+  return null;
+}
+
 /** The first JSON object in a reply, fenced or not, chatter or not. */
 export function parseRecipeJson(reply: string): Record<string, any> | null {
   const fenced = reply.match(/```(?:json)?\s*([\s\S]*?)```/i);
