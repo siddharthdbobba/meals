@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendJsonl, readJsonl, SeenSet } from './lib/queue.ts';
 import { slugFor, parseRecipeJson, validateRecipe, cliFailureReason } from './lib/transform.ts';
+import { recordSpend, calibrateFromLimit, overBudget, windowSpend, budget } from './lib/spend.ts';
 import {
   TRIP_STYLES, SLOTS, HEAT_SOURCES, WATER, CLEANUP, DIETARY,
   HOME_PREP, SHELF_LIFE, SKILL, COST,
@@ -123,9 +124,18 @@ title, blurb, tripStyle[], slot[], heatSource[], prepMinutes, cookMinutes, calor
 body is the markdown prose that follows the frontmatter: two short paragraphs.`;
 }
 
-function askClaude(prompt: string, model: string | null): Promise<{ out: string; err: string }> {
+/**
+ * The reply text and what the call cost.
+ *
+ * `--output-format json` wraps the answer in an envelope that carries
+ * total_cost_usd, which is the only per-call number the CLI will tell us and
+ * so the only way the chain can meter its own five-hour spend. A failure
+ * notice ("Not logged in") is printed raw, outside any envelope, so an
+ * unparseable stdout is passed through as the reply rather than discarded.
+ */
+function askClaude(prompt: string, model: string | null): Promise<{ out: string; err: string; usd: number }> {
   return new Promise((resolve) => {
-    const args = ['-p', '--permission-mode', 'bypassPermissions'];
+    const args = ['-p', '--output-format', 'json', '--permission-mode', 'bypassPermissions'];
     if (model) args.push('--model', model);
     args.push(prompt);
 
@@ -137,8 +147,20 @@ function askClaude(prompt: string, model: string | null): Promise<{ out: string;
     // behind seventeen thousand "reply was not valid JSON" quarantines.
     child.stderr.on('data', (d) => { err += d; });
     const timer = setTimeout(() => child.kill('SIGKILL'), TIMEOUT_MS);
-    child.on('close', () => { clearTimeout(timer); resolve({ out, err }); });
-    child.on('error', (e) => { clearTimeout(timer); resolve({ out: '', err: String(e) }); });
+    child.on('close', () => {
+      clearTimeout(timer);
+      try {
+        const envelope = JSON.parse(out);
+        resolve({
+          out: String(envelope.result ?? ''),
+          err,
+          usd: Number(envelope.total_cost_usd) || 0,
+        });
+      } catch {
+        resolve({ out, err, usd: 0 });
+      }
+    });
+    child.on('error', (e) => { clearTimeout(timer); resolve({ out: '', err: String(e), usd: 0 }); });
   });
 }
 
@@ -170,7 +192,8 @@ async function transform(
   // Two attempts: the second is told exactly which schema rules it broke,
   // which recovers most failures (a stray facet value, a missing field).
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const { out, err } = await askClaude(buildPrompt(c, errors), model);
+    const { out, err, usd } = await askClaude(buildPrompt(c, errors), model);
+    recordSpend(STATE, usd, 'stage3');
     lastReply = out;
     lastStderr = err;
 
@@ -181,6 +204,9 @@ async function transform(
     // on a later run.
     const failure = cliFailureReason(out);
     if (failure) {
+      // A rate limit is the wall itself: what the window had spent when it
+      // arrived is the ceiling the budget is set below.
+      if (failure === 'rate limited') calibrateFromLimit(STATE);
       appendJsonl(join(STATE, 'stage3-deferred.jsonl'), {
         url: c.url,
         reason: failure,
@@ -260,6 +286,10 @@ async function main() {
 
   const worker = async () => {
     while (next < pending.length && !halted) {
+      // Checked before every candidate, not once at the start: the budget is
+      // a rolling five-hour window, so it can be crossed mid-run.
+      const spent = overBudget(STATE);
+      if (spent) { halted = spent; break; }
       const c = pending[next];
       next += 1;
       try {
@@ -296,6 +326,10 @@ async function main() {
   };
 
   await Promise.all(Array.from({ length: Math.min(parallel, pending.length) }, worker));
+  const cap = budget(STATE);
+  console.log(
+    `five-hour spend: $${windowSpend(STATE).toFixed(2)}${cap === null ? ' (no budget calibrated yet)' : ` of $${cap.toFixed(2)}`}`,
+  );
   if (halted) console.error(`stage 3 halted: ${halted}`);
   console.log(`stage 3 done: ${written} drafts written, ${quarantined} quarantined, ${deferred} deferred for a later run`);
   if (halted) process.exitCode = 1;

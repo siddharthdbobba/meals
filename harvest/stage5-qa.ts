@@ -19,7 +19,8 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendJsonl } from './lib/queue.ts';
-import { shardFor, renderRecipe } from './lib/transform.ts';
+import { shardFor, renderRecipe, cliFailureReason } from './lib/transform.ts';
+import { recordSpend, calibrateFromLimit, overBudget, windowSpend, budget } from './lib/spend.ts';
 import { qaVerdict, type Recipe, type Refutation } from './lib/qa.ts';
 
 const argNum = (name: string, fallback: number): number => {
@@ -49,20 +50,42 @@ const LENSES = [
   },
 ];
 
-function askClaude(prompt: string): Promise<string> {
+function askClaude(prompt: string): Promise<{ out: string; usd: number }> {
   return new Promise((resolve) => {
     const child = spawn(
       'claude',
-      ['-p', '--model', MODEL, '--permission-mode', 'bypassPermissions', prompt],
+      ['-p', '--output-format', 'json', '--model', MODEL, '--permission-mode', 'bypassPermissions', prompt],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let out = '';
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', () => {});
     const timer = setTimeout(() => child.kill('SIGKILL'), TIMEOUT_MS);
-    child.on('close', () => { clearTimeout(timer); resolve(out); });
-    child.on('error', () => { clearTimeout(timer); resolve(''); });
+    child.on('close', () => {
+      clearTimeout(timer);
+      try {
+        const envelope = JSON.parse(out);
+        resolve({ out: String(envelope.result ?? ''), usd: Number(envelope.total_cost_usd) || 0 });
+      } catch {
+        // A failure notice is printed raw, outside the envelope. Pass it
+        // through so the caller can tell it apart from a refuter's answer.
+        resolve({ out, usd: 0 });
+      }
+    });
+    child.on('error', () => { clearTimeout(timer); resolve({ out: '', usd: 0 }); });
   });
+}
+
+/** One refuter's answer, or the CLI's excuse for not having one. */
+async function refute(prompt: string): Promise<Refutation | { failure: string }> {
+  const { out, usd } = await askClaude(prompt);
+  recordSpend(STATE, usd, 'stage5');
+  const failure = cliFailureReason(out);
+  if (failure) {
+    if (failure === 'rate limited') calibrateFromLimit(STATE);
+    return { failure };
+  }
+  return parseRefutation(out);
 }
 
 function refutePrompt(recipe: Recipe, lens: (typeof LENSES)[number]): string {
@@ -107,7 +130,9 @@ function freePath(slug: string): { slug: string; path: string } {
   return { slug: candidate, path: join(CONTENT, shard, `${candidate}.md`) };
 }
 
-async function review(file: string): Promise<'published' | 'rejected'> {
+type Reviewed = { outcome: 'published' | 'rejected' } | { outcome: 'deferred'; failure: string };
+
+async function review(file: string): Promise<Reviewed> {
   const draft = JSON.parse(readFileSync(join(DRAFTS, file), 'utf8'));
   const recipe: Recipe = draft.recipe;
   const slug = file.replace(/\.json$/, '');
@@ -118,9 +143,16 @@ async function review(file: string): Promise<'published' | 'rejected'> {
 
   let refutations: Refutation[] = [];
   if (cheap.pass) {
-    refutations = await Promise.all(
-      LENSES.map((lens) => askClaude(refutePrompt(recipe, lens)).then(parseRefutation)),
-    );
+    const answers = await Promise.all(LENSES.map((lens) => refute(refutePrompt(recipe, lens))));
+
+    // A refuter that never ran has not approved anything. Publishing on its
+    // silence is how an unauthenticated cron job could put recipes on the site
+    // that nothing had reviewed — the same missing USER that burned the
+    // candidates, failing in the opposite and more dangerous direction.
+    const failed = answers.find((a) => 'failure' in a) as { failure: string } | undefined;
+    if (failed) return { outcome: 'deferred', failure: failed.failure };
+
+    refutations = answers as Refutation[];
   }
 
   const verdict = qaVerdict(recipe, draft.sourceText ?? '', refutations);
@@ -134,13 +166,13 @@ async function review(file: string): Promise<'published' | 'rejected'> {
       'utf8',
     );
     renameSync(join(DRAFTS, file), join(REJECTED, `${slug}.draft.json`));
-    return 'rejected';
+    return { outcome: 'rejected' };
   }
 
   const { path } = freePath(slug);
   writeFileSync(path, renderRecipe(recipe as any, draft.url), 'utf8');
   renameSync(join(DRAFTS, file), join(DRAFTS, `${slug}.published`));
-  return 'published';
+  return { outcome: 'published' };
 }
 
 async function main() {
@@ -163,16 +195,28 @@ async function main() {
 
   let published = 0;
   let rejected = 0;
+  let deferred = 0;
   const reasons: string[] = [];
   let next = 0;
+  let halted: string | null = null;
 
   const worker = async () => {
-    while (next < files.length) {
+    while (next < files.length && !halted) {
+      const overspent = overBudget(STATE);
+      if (overspent) { halted = overspent; break; }
+
       const file = files[next];
       next += 1;
       try {
-        if ((await review(file)) === 'published') published += 1;
-        else rejected += 1;
+        const result = await review(file);
+        if (result.outcome === 'published') published += 1;
+        else if (result.outcome === 'rejected') rejected += 1;
+        else {
+          // The draft stays in drafts/, unjudged, for a run that can reach a
+          // model. Five in a row means the condition is the machine's.
+          deferred += 1;
+          if (deferred >= 5) halted = `the CLI is failing on every refuter: ${result.failure}`;
+        }
       } catch (e) {
         rejected += 1;
         reasons.push(`${file}: ${(e as Error).message}`);
@@ -181,7 +225,13 @@ async function main() {
   };
 
   await Promise.all(Array.from({ length: Math.min(parallel, files.length) }, worker));
-  console.log(`stage 5 done: ${published} published, ${rejected} rejected`);
+  const cap = budget(STATE);
+  console.log(
+    `five-hour spend: $${windowSpend(STATE).toFixed(2)}${cap === null ? ' (no budget calibrated yet)' : ` of $${cap.toFixed(2)}`}`,
+  );
+  if (halted) console.error(`stage 5 halted: ${halted}`);
+  console.log(`stage 5 done: ${published} published, ${rejected} rejected, ${deferred} left unjudged`);
+  if (halted) process.exitCode = 1;
   if (reasons.length) console.log(reasons.slice(0, 5).join('\n'));
 }
 
