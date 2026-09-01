@@ -119,6 +119,24 @@ export function cliFailureReason(reply: string): string | null {
   return null;
 }
 
+/**
+ * Whether the reply is the writer refusing the page rather than failing at it.
+ *
+ * Stage 2 lets some pages through that are not recipes at all — a forum thread
+ * about canoe seats, a discussion of favourite cooking shows. Asked to write a
+ * recipe from one, the model correctly says it cannot, in prose. That is a
+ * verdict on the source, not a malformed answer, so it should not be retried
+ * and should not be filed under "reply was not valid JSON": the second call
+ * costs the same as the first and is refused for the same reason.
+ */
+export function sourceRefusal(reply: string): boolean {
+  const head = reply.trim().slice(0, 300);
+  if (!head || head.includes('{')) return false;
+  return /\b(cannot|can't|can not|unable to)\b[^.]{0,80}\b(write|generate|create|produce)\b/i.test(head)
+    || /\bnot (a|an) (recipe|food|cooking)\b/i.test(head)
+    || /\bno (ingredients|recipe|food)\b/i.test(head);
+}
+
 /** The first JSON object in a reply, fenced or not, chatter or not. */
 export function parseRecipeJson(reply: string): Record<string, any> | null {
   const fenced = reply.match(/```(?:json)?\s*([\s\S]*?)```/i);

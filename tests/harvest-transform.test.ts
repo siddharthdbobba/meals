@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { slugFor, shardFor, toFrontmatter, renderRecipe, parseRecipeJson, validateRecipe, cliFailureReason } from '../harvest/lib/transform';
+import { slugFor, shardFor, toFrontmatter, renderRecipe, parseRecipeJson, validateRecipe, cliFailureReason, sourceRefusal } from '../harvest/lib/transform';
 import { leanArgs } from '../harvest/lib/cli';
 import { mealFields } from '../schema';
 
@@ -213,5 +213,23 @@ describe('leanArgs', () => {
     const args = leanArgs();
     expect(args[args.length - 1]).toBe('--no-session-persistence');
     expect(args.indexOf('--mcp-config')).toBeLessThan(args.length - 2);
+  });
+});
+
+describe('sourceRefusal', () => {
+  it('recognises the writer declining a page that is not a recipe', () => {
+    expect(sourceRefusal(
+      "I can't write a recipe from this source material—it's about canoe seat "
+      + 'construction and weight comparisons, not food or cooking.',
+    )).toBe(true);
+    expect(sourceRefusal(
+      'I cannot generate a recipe from this source material. The provided text '
+      + "is a forum thread discussing people's favorite cooking shows.",
+    )).toBe(true);
+  });
+
+  it('does not mistake a recipe for a refusal', () => {
+    expect(sourceRefusal('{"title":"Camp Chili","blurb":"No ingredients you cannot carry."}')).toBe(false);
+    expect(sourceRefusal('```json\n{"title":"X"}\n```')).toBe(false);
   });
 });

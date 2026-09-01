@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { appendJsonl, iterJsonl, SeenSet } from './lib/queue.ts';
-import { slugFor, parseRecipeJson, validateRecipe, cliFailureReason } from './lib/transform.ts';
+import { slugFor, parseRecipeJson, validateRecipe, cliFailureReason, sourceRefusal } from './lib/transform.ts';
 import { recordSpend, calibrateFromLimit, overBudget, windowSpend, budget } from './lib/spend.ts';
 import { leanArgs } from './lib/cli.ts';
 import {
@@ -184,6 +184,15 @@ async function transform(
   c: Candidate,
   model: string | null,
 ): Promise<'written' | 'quarantined' | 'deferred'> {
+  // A page with no ingredients cannot produce a recipe grounded in it, and the
+  // gate would reject whatever came back anyway. Stage 2 lets some of these
+  // through — forum threads, shop listings — and asking a model about them
+  // costs two calls to be told what the empty list already said.
+  if ((c.ingredients?.length ?? 0) === 0) {
+    quarantine(c, ['source lists no ingredients'], '', '');
+    return 'quarantined';
+  }
+
   let errors: string[] | undefined;
   // The last reply, kept so a quarantine record can show what was actually
   // said. Without it, "reply was not valid JSON" is a verdict with no evidence
@@ -223,6 +232,12 @@ async function transform(
     const parsed = parseRecipeJson(out);
 
     if (!parsed) {
+      // A refusal is about the page, not the answer. Retrying asks the same
+      // model the same question about the same unusable source.
+      if (sourceRefusal(out)) {
+        quarantine(c, ['source is not a recipe'], out, err);
+        return 'quarantined';
+      }
       errors = ['reply was not valid JSON'];
       continue;
     }
@@ -245,17 +260,22 @@ async function transform(
     return 'written';
   }
 
+  quarantine(c, errors ?? [], lastReply, lastStderr);
+  return 'quarantined';
+}
+
+/** The rejected candidate, with the reply that rejected it. */
+function quarantine(c: Candidate, errors: string[], reply: string, stderr: string): void {
   mkdirSync(QUARANTINE, { recursive: true });
   writeFileSync(
     join(QUARANTINE, `${slugFor(c.title) || 'untitled'}-${Date.now()}.json`),
     JSON.stringify(
-      { candidate: c, errors, reply: lastReply.slice(0, 4_000), stderr: lastStderr.slice(0, 1_000) },
+      { candidate: c, errors, reply: reply.slice(0, 4_000), stderr: stderr.slice(0, 1_000) },
       null,
       2,
     ),
     'utf8',
   );
-  return 'quarantined';
 }
 
 async function main() {
