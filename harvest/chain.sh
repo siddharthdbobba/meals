@@ -86,18 +86,23 @@ case "$LAYER" in
     ;;
 
   5)
+    # Each claude call is a node process of its own, and the gate runs two per
+    # draft. At ten and eight this machine carried twenty-five of them against
+    # ten cores — load average 20, and refuters killed at their five-minute
+    # timeout with a finished answer they never got to print. Six and four keep
+    # the box under one job per core.
     say "writing recipe drafts"
     # Haiku, measured against the alternatives on twenty pages: $0.09 a page
     # against $0.27, valid frontmatter 20/20 against 14/20, and 18/20 through
     # the gate's rules against 11/20. The larger models wander outside "reply
     # with ONLY a JSON object"; this one obeys it.
-    "${NODE[@]}" "$ROOT/harvest/stage3.ts" --parallel 10 --model claude-haiku-4-5 2>&1 | tee -a "$LOG"
+    "${NODE[@]}" "$ROOT/harvest/stage3.ts" --parallel 6 --model claude-haiku-4-5 2>&1 | tee -a "$LOG"
     descend
     ;;
 
   6)
     say "quality gate"
-    "${NODE[@]}" "$ROOT/harvest/stage5-qa.ts" --parallel 8 2>&1 | tee -a "$LOG"
+    "${NODE[@]}" "$ROOT/harvest/stage5-qa.ts" --parallel 4 2>&1 | tee -a "$LOG"
     say "$(find "$ROOT/content" -name '*.md' | wc -l | tr -d ' ') recipes in content/"
     descend
     ;;
