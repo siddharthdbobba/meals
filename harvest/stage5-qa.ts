@@ -50,7 +50,7 @@ const LENSES = [
   },
 ];
 
-function askClaude(prompt: string): Promise<{ out: string; usd: number }> {
+function askClaude(prompt: string): Promise<{ out: string; usd: number; err: string }> {
   return new Promise((resolve) => {
     const child = spawn(
       'claude',
@@ -58,32 +58,42 @@ function askClaude(prompt: string): Promise<{ out: string; usd: number }> {
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let out = '';
+    // stderr is kept. Discarding it is what left a burst of empty replies with
+    // no way to tell a killed subprocess from a refused one.
+    let err = '';
+    let timedOut = false;
     child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', () => {});
-    const timer = setTimeout(() => child.kill('SIGKILL'), TIMEOUT_MS);
+    child.stderr.on('data', (d) => { err += d; });
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, TIMEOUT_MS);
     child.on('close', () => {
       clearTimeout(timer);
+      const why = timedOut ? `killed after ${TIMEOUT_MS / 1000}s` : err;
       try {
         const envelope = JSON.parse(out);
-        resolve({ out: String(envelope.result ?? ''), usd: Number(envelope.total_cost_usd) || 0 });
+        resolve({ out: String(envelope.result ?? ''), usd: Number(envelope.total_cost_usd) || 0, err: why });
       } catch {
         // A failure notice is printed raw, outside the envelope. Pass it
         // through so the caller can tell it apart from a refuter's answer.
-        resolve({ out, usd: 0 });
+        resolve({ out, usd: 0, err: why });
       }
     });
-    child.on('error', () => { clearTimeout(timer); resolve({ out: '', usd: 0 }); });
+    child.on('error', (e) => { clearTimeout(timer); resolve({ out: '', usd: 0, err: String(e) }); });
   });
 }
 
 /** One refuter's answer, or the CLI's excuse for not having one. */
 async function refute(prompt: string): Promise<Refutation | { failure: string }> {
-  const { out, usd } = await askClaude(prompt);
+  const { out, usd, err } = await askClaude(prompt);
   recordSpend(STATE, usd, 'stage5');
   const failure = cliFailureReason(out);
   if (failure) {
     if (failure === 'rate limited') calibrateFromLimit(STATE);
-    return { failure };
+    appendJsonl(join(STATE, 'stage5-unjudged.jsonl'), {
+      reason: failure,
+      stderr: err.slice(0, 300),
+      reply: out.trim().slice(0, 200),
+    });
+    return { failure: err ? `${failure} (${err.slice(0, 80).trim()})` : failure };
   }
   return parseRefutation(out);
 }
