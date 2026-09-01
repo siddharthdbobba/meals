@@ -18,7 +18,8 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendJsonl, readJsonl, SeenSet } from './lib/queue.ts';
+import { pathToFileURL } from 'node:url';
+import { appendJsonl, iterJsonl, SeenSet } from './lib/queue.ts';
 import { slugFor, parseRecipeJson, validateRecipe, cliFailureReason } from './lib/transform.ts';
 import { recordSpend, calibrateFromLimit, overBudget, windowSpend, budget } from './lib/spend.ts';
 import { leanArgs } from './lib/cli.ts';
@@ -78,7 +79,7 @@ shelfLife: ${SHELF_LIFE.join(', ')}
 skill: ${SKILL.join(', ')}
 cost: ${COST.join(', ')}`;
 
-function buildPrompt(c: Candidate, retryErrors?: string[]): string {
+export function buildPrompt(c: Candidate, retryErrors?: string[]): string {
   const retry = retryErrors?.length
     ? `\n\nYour previous attempt was REJECTED by the schema:\n${retryErrors.map((e) => `- ${e}`).join('\n')}\nFix exactly these problems.\n`
     : '';
@@ -263,20 +264,29 @@ async function main() {
   const model = argStr('model');
 
   const done = new SeenSet(DONE);
-  const pending = readJsonl<Candidate>(CANDIDATES)
-    .filter((c) => !done.has(c.url))
-    .slice(0, limit === Infinity ? undefined : limit);
 
-  if (pending.length === 0) {
-    console.log('no candidates waiting');
-    return;
-  }
-  console.log(`transforming ${pending.length} candidates, ${parallel} at a time${model ? ` on ${model}` : ''}`);
+  // The queue is streamed, not loaded. At 529 MB it can no longer be held as a
+  // string at all, and holding it would be pointless anyway: a worker needs one
+  // candidate at a time. Workers share the generator, and each next() hands out
+  // one record, so no two workers can take the same one.
+  const queue = iterJsonl<Candidate>(CANDIDATES);
+  let taken = 0;
+  const takeCandidate = (): Candidate | null => {
+    if (taken >= limit) return null;
+    for (;;) {
+      const step = queue.next();
+      if (step.done) return null;
+      if (done.has(step.value.url)) continue;
+      taken += 1;
+      return step.value;
+    }
+  };
+
+  console.log(`transforming up to ${limit === Infinity ? 'every' : limit} waiting candidate(s), ${parallel} at a time${model ? ` on ${model}` : ''}`);
 
   let written = 0;
   let quarantined = 0;
   let deferred = 0;
-  let next = 0;
 
   // A machine failure — not logged in, rate limited, out of credit — will hit
   // the next candidate exactly as it hit this one. Once a handful in a row
@@ -286,13 +296,13 @@ async function main() {
   let halted: string | null = null;
 
   const worker = async () => {
-    while (next < pending.length && !halted) {
+    while (!halted) {
       // Checked before every candidate, not once at the start: the budget is
       // a rolling five-hour window, so it can be crossed mid-run.
       const spent = overBudget(STATE);
       if (spent) { halted = spent; break; }
-      const c = pending[next];
-      next += 1;
+      const c = takeCandidate();
+      if (!c) break;
       try {
         const result = await transform(c, model);
         if (result === 'deferred') {
@@ -326,7 +336,7 @@ async function main() {
     }
   };
 
-  await Promise.all(Array.from({ length: Math.min(parallel, pending.length) }, worker));
+  await Promise.all(Array.from({ length: parallel }, worker));
   const cap = budget(STATE);
   console.log(
     `five-hour spend: $${windowSpend(STATE).toFixed(2)}${cap === null ? ' (no budget calibrated yet)' : ` of $${cap.toFixed(2)}`}`,
@@ -336,7 +346,11 @@ async function main() {
   if (halted) process.exitCode = 1;
 }
 
-main().catch((e) => {
-  console.error('stage 3 failed:', e);
-  process.exit(1);
-});
+// Only when run as the stage, not when a tool imports buildPrompt to ask the
+// same question of a different model.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => {
+    console.error('stage 3 failed:', e);
+    process.exit(1);
+  });
+}
