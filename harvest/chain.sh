@@ -87,7 +87,11 @@ case "$LAYER" in
 
   5)
     say "writing recipe drafts"
-    "${NODE[@]}" "$ROOT/harvest/stage3.ts" --parallel 10 2>&1 | tee -a "$LOG"
+    # Haiku, measured against the alternatives on twenty pages: $0.09 a page
+    # against $0.27, valid frontmatter 20/20 against 14/20, and 18/20 through
+    # the gate's rules against 11/20. The larger models wander outside "reply
+    # with ONLY a JSON object"; this one obeys it.
+    "${NODE[@]}" "$ROOT/harvest/stage3.ts" --parallel 10 --model claude-haiku-4-5 2>&1 | tee -a "$LOG"
     descend
     ;;
 
