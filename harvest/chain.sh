@@ -29,6 +29,20 @@ LAYER="${1:-1}"
 
 mkdir -p "$STATE"
 
+# Run from a snapshot, never from the file itself.
+#
+# Bash reads a script by byte offset as it executes, so editing chain.sh while
+# a chain is running corrupts that running chain: it resumes mid-line and dies
+# on "llel: command not found". Copying the script once and running the copy
+# means an edit lands on the next chain, not the middle of this one. The guard
+# is exported, so the layers below inherit one consistent version.
+SNAPSHOT="$STATE/chain-running.sh"
+if [ "${CHAIN_SNAPSHOT:-}" != "1" ]; then
+  cp "$0" "$SNAPSHOT"
+  export CHAIN_SNAPSHOT=1
+  exec bash "$SNAPSHOT" "$LAYER"
+fi
+
 say() { echo "[$(date '+%H:%M:%S')] layer $LAYER: $*" | tee -a "$LOG"; }
 
 # Spawn the next layer as a child of this shell, then wait on it. The nesting
@@ -40,7 +54,7 @@ descend() {
     return 0
   fi
   say "descending to layer $next"
-  bash "$ROOT/harvest/chain.sh" "$next"
+  bash "$SNAPSHOT" "$next"
 }
 
 case "$LAYER" in

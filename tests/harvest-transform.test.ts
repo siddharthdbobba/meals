@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { slugFor, shardFor, toFrontmatter, renderRecipe, parseRecipeJson, validateRecipe, cliFailureReason } from '../harvest/lib/transform';
+import { leanArgs } from '../harvest/lib/cli';
 import { mealFields } from '../schema';
 
 const valid = {
@@ -201,5 +202,16 @@ describe('cliFailureReason', () => {
         + 'x'.repeat(500),
     });
     expect(cliFailureReason(recipe)).toBeNull();
+  });
+});
+
+describe('leanArgs', () => {
+  it('never ends on the variadic --mcp-config, which would eat the prompt', () => {
+    // `--mcp-config <configs...>` takes every argument that follows it. The
+    // prompt is pushed after these flags, so if the JSON were last the CLI
+    // would read the recipe prompt as a second config file and refuse to run.
+    const args = leanArgs();
+    expect(args[args.length - 1]).toBe('--no-session-persistence');
+    expect(args.indexOf('--mcp-config')).toBeLessThan(args.length - 2);
   });
 });
