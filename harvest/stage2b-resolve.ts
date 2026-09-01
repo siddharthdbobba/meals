@@ -12,6 +12,7 @@
 
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
+import { leanArgs } from './lib/cli.ts';
 import { appendJsonl, readJsonl, SeenSet } from './lib/queue.ts';
 import {
   batchPages,
@@ -42,7 +43,7 @@ function askClaude(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     const child = spawn(
       'claude',
-      ['-p', '--model', MODEL, '--permission-mode', 'bypassPermissions', prompt],
+      ['-p', '--model', MODEL, '--permission-mode', 'bypassPermissions', ...leanArgs(), prompt],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
 

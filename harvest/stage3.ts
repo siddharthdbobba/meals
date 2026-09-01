@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { appendJsonl, readJsonl, SeenSet } from './lib/queue.ts';
 import { slugFor, parseRecipeJson, validateRecipe, cliFailureReason } from './lib/transform.ts';
 import { recordSpend, calibrateFromLimit, overBudget, windowSpend, budget } from './lib/spend.ts';
+import { leanArgs } from './lib/cli.ts';
 import {
   TRIP_STYLES, SLOTS, HEAT_SOURCES, WATER, CLEANUP, DIETARY,
   HOME_PREP, SHELF_LIFE, SKILL, COST,
@@ -135,7 +136,7 @@ body is the markdown prose that follows the frontmatter: two short paragraphs.`;
  */
 function askClaude(prompt: string, model: string | null): Promise<{ out: string; err: string; usd: number }> {
   return new Promise((resolve) => {
-    const args = ['-p', '--output-format', 'json', '--permission-mode', 'bypassPermissions'];
+    const args = ['-p', '--output-format', 'json', '--permission-mode', 'bypassPermissions', ...leanArgs()];
     if (model) args.push('--model', model);
     args.push(prompt);
 

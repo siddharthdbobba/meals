@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { appendJsonl } from './lib/queue.ts';
 import { shardFor, renderRecipe, cliFailureReason } from './lib/transform.ts';
 import { recordSpend, calibrateFromLimit, overBudget, windowSpend, budget } from './lib/spend.ts';
+import { leanArgs } from './lib/cli.ts';
 import { qaVerdict, type Recipe, type Refutation } from './lib/qa.ts';
 
 const argNum = (name: string, fallback: number): number => {
@@ -35,7 +36,7 @@ const CONTENT = join(ROOT, 'content');
 const REJECTED = join(ROOT, 'harvest/rejected');
 const LOG = join(STATE, 'qa.jsonl');
 
-const TIMEOUT_MS = 180_000;
+const TIMEOUT_MS = 300_000;
 const MODEL = 'claude-haiku-4-5';
 
 /** Two different questions, so two refuters cannot fail the same way. */
@@ -54,7 +55,7 @@ function askClaude(prompt: string): Promise<{ out: string; usd: number; err: str
   return new Promise((resolve) => {
     const child = spawn(
       'claude',
-      ['-p', '--output-format', 'json', '--model', MODEL, '--permission-mode', 'bypassPermissions', prompt],
+      ['-p', '--output-format', 'json', '--model', MODEL, '--permission-mode', 'bypassPermissions', ...leanArgs(), prompt],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let out = '';
