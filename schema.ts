@@ -66,3 +66,14 @@ export function mealFields(z: any) {
 
 /** Where the recipe markdown lives, relative to the consuming site's root. */
 export const MEALS_GLOB_BASE = "./src/meals/content";
+
+/**
+ * Every recipe under the base, including the sharded subdirectories.
+ *
+ * The harvest files a published recipe under its first letter (content/c/…)
+ * so that no directory holds thousands of entries. A flat `*.md` sees only the
+ * two dozen recipes written by hand before sharding existed — which is how
+ * 1,622 harvested recipes sat in the repo, committed and passing tests, while
+ * the site kept building the original 30.
+ */
+export const MEALS_GLOB_PATTERN = "**/*.md";

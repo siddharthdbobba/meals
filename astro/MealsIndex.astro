@@ -3,6 +3,7 @@ import { getCollection } from "astro:content";
 import "../styles/meals.css";
 import { CORE_FACETS, MORE_FACETS, FACETS, SORTS, DEFAULT_SORT, facetLabel } from "../data/meals";
 import { derive, facetsFor, searchText, sortMetrics, type MealInput } from "../lib/meals";
+import { mealSlug } from "./routes";
 
 /**
  * The meals index, as a self-contained block. The consuming site supplies the
@@ -130,7 +131,7 @@ const fmtOunces = (oz: number) => (Number.isInteger(oz) ? `${oz}` : oz.toFixed(1
           data-mcalories={entry.metrics.calories}
           data-mtitle={entry.metrics.title}
         >
-          <a class="meal-card__link" href={`/meals/${entry.id}/`}>
+          <a class="meal-card__link" href={`/meals/${mealSlug(entry.id)}/`}>
             <h2 class="meal-card__title">{entry.data.title}</h2>
             <p class="meal-card__blurb">{entry.data.blurb}</p>
           </a>

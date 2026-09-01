@@ -12,7 +12,7 @@ the title and description. Everything else is here.
 ## Layout
 
 ```
-content/            21 recipes, one markdown file each; frontmatter carries the facets
+content/            the recipes, sharded by first letter; frontmatter carries the facets
 data/meals.ts       the facet vocabulary: keys, labels, options, sort options
 lib/meals.ts        derived maths, the match predicate, the URL codec (pure functions)
 schema.ts           the frontmatter field map, and where the site should glob for content
@@ -31,10 +31,10 @@ definition, no mirror to keep in sync.
 
 ```ts
 // content.config.ts
-import { mealFields, MEALS_GLOB_BASE } from './meals/schema.ts';
+import { mealFields, MEALS_GLOB_BASE, MEALS_GLOB_PATTERN } from './meals/schema.ts';
 
 const meals = defineCollection({
-  loader: glob({ base: MEALS_GLOB_BASE, pattern: '*.md' }),
+  loader: glob({ base: MEALS_GLOB_BASE, pattern: MEALS_GLOB_PATTERN }),
   schema: z.object(mealFields(z)),
 });
 ```
